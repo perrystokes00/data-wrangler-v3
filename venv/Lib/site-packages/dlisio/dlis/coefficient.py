@@ -1,0 +1,109 @@
+from collections import OrderedDict
+
+from .basicobject import BasicObject
+from . import utils
+
+
+class Coefficient(BasicObject):
+    """
+    Records of measurements, references, and tolerances used in the calibration
+    of channels.
+
+    Attributes
+    ----------
+
+    label : str
+        Identify the coefficient-role in the calibration process
+
+        RP66V1 name: *LABEL*
+
+    coefficients : list
+        Coefficients corresponding to the label
+
+        RP66V1 name: *COEFFICIENTS*
+
+    references : list
+        Nominal values for each coefficient
+
+        RP66V1 name: *REFERENCES*
+
+    plus_tolerance : list
+        Maximum value that a sample can exceed the reference and still be
+        "within tolerance"
+
+        RP66V1 name: *PLUS-TOLERANCES*
+
+    minus_tolerance : list
+        Maximum value that a sample can fall below the reference and still
+        be "within tolerance"
+
+        RP66V1 name: *MINUS-TOLERANCES*
+
+    See also
+    --------
+
+    BasicObject : The basic object that Coefficient is derived from
+
+    Notes
+    -----
+
+    The Coefficient object reflects the logical record type
+    CALIBRATION-COEFFICIENT, defined in rp66. CALIBRATION-COEFFICIENT records
+    are listed in Appendix A.2 - Logical Record Types and described in detail
+    in Chapter 5.8.7.2 - Static and Frame Data, CALIBRATION-COEFFICIENT
+    objects.
+    """
+    attributes = {
+        "LABEL"           : utils.scalar,
+        "COEFFICIENTS"    : utils.vector,
+        "REFERENCES"      : utils.vector,
+        "PLUS-TOLERANCES" : utils.vector,
+        "MINUS-TOLERANCES": utils.vector,
+    }
+
+    def __init__(self, attic, lf):
+        super().__init__(attic, lf=lf)
+
+    @property
+    def label(self):
+        return self['LABEL']
+
+    @property
+    def coefficients(self):
+        return self['COEFFICIENTS']
+
+    @property
+    def references(self):
+        return self['REFERENCES']
+
+    @property
+    def plus_tolerance(self):
+        return self['PLUS-TOLERANCES']
+
+    @property
+    def minus_tolerance(self):
+        return self['MINUS-TOLERANCES']
+
+    def describe_attr(self, buf, width, indent, exclude):
+        d = OrderedDict()
+        d['Coefficient type']   = self.label
+        d['Number of value(s)'] = len(self.coefficients)
+
+        utils.describe_dict(buf, d, width, indent, exclude)
+
+        d = OrderedDict()
+        d['Reference value(s)'] =  'REFERENCES'
+        d['Minus Tolerance(s)'] =  'PLUS-TOLERANCES'
+        d['Plus Tolerance(s)']  =  'MINUS-TOLERANCES'
+
+        utils.describe_sampled_attrs(
+            buf,
+            self.attic,
+            [1],
+            'COEFFICIENTS',
+            d,
+            width,
+            indent,
+            exclude,
+            single=False
+        )

@@ -1,0 +1,42 @@
+{
+  "table_schema": "dbo",
+  "table_name": "R_WELL_CLASS",
+  "pk_columns": [
+    "WELL_CLASS"
+  ],
+  "rows": [
+    {
+      "WELL_CLASS": "Produce"
+    },
+    {
+      "WELL_CLASS": "Inject"
+    },
+    {
+      "WELL_CLASS": "Cycle"
+    },
+    {
+      "WELL_CLASS": "Service"
+    },
+    {
+      "WELL_CLASS": "Produce/Inject"
+    },
+    {
+      "WELL_CLASS": "Storage"
+    },
+    {
+      "WELL_CLASS": "Disposal"
+    },
+    {
+      "WELL_CLASS": "Relief"
+    },
+    {
+      "WELL_CLASS": "Observation"
+    },
+    {
+      "WELL_CLASS": "Strat Hole"
+    },
+    {
+      "WELL_CLASS": "Supply"
+    }
+  ]
+}

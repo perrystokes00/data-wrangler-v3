@@ -1,0 +1,52 @@
+# Data Wrangler v2 — Python Dependencies
+# Requires Python 3.12.x
+# Install: pip install -r requirements.txt
+
+# ── Core framework ────────────────────────────────────────────────────────────
+streamlit==1.45.0
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+pandas==2.2.3
+numpy==2.0.1
+SQLAlchemy==2.0.43
+
+# ── Database drivers ──────────────────────────────────────────────────────────
+pyodbc==5.3.0                    # SQL Server
+oracledb==3.4.2                  # Oracle
+snowflake-sqlalchemy==1.9.0      # Snowflake
+snowflake-connector-python==4.4.0
+
+# ── Petroleum file formats ────────────────────────────────────────────────────
+lasio==0.31                      # LAS 2.0 / 3.0
+segyio==1.9.14                   # SEG-Y
+dlisio==1.0.4                    # DLIS / LIS
+
+# ── PDF extraction ────────────────────────────────────────────────────────────
+pdfplumber==0.11.4               # Text-based PDF extraction
+pymupdf==1.24.10                 # Fallback PDF / image extraction
+reportlab==4.2.2                 # PDF generation (sample files, reports)
+
+# ── Office file formats ───────────────────────────────────────────────────────
+openpyxl==3.1.5                  # Excel read/write (.xlsx)
+xlrd==2.0.1                      # Legacy Excel read (.xls)
+python-docx==1.1.2               # Word documents (.docx)
+
+# ── Spatial / GIS (optional — enables Shapefile Catalog) ─────────────────────
+# Install separately if needed:
+# pip install geopandas fiona shapely pyproj
+geopandas==0.14.4
+fiona==1.9.6
+shapely==2.0.6
+pyproj==3.6.1
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+matplotlib==3.9.2
+plotly==5.24.1
+folium==0.20.0                   # Map rendering
+
+# ── AI / API ──────────────────────────────────────────────────────────────────
+anthropic                        # Claude API (AI-powered column mapping)
+requests==2.32.5                 # OSDU REST API / HTTP
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv==1.2.1             # .env file loading

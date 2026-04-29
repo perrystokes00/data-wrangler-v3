@@ -1,0 +1,174 @@
+DATA WRANGLER
+END USER LICENCE AGREEMENT (EULA)
+
+Version 1.0 — Effective April 2026
+
+PLEASE READ THIS AGREEMENT CAREFULLY BEFORE INSTALLING OR USING DATA WRANGLER.
+BY INSTALLING, COPYING, OR OTHERWISE USING THE SOFTWARE, YOU AGREE TO BE BOUND
+BY THE TERMS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT INSTALL OR USE THE
+SOFTWARE.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. DEFINITIONS
+
+"Software" means Data Wrangler, including all associated files, documentation,
+updates, and licence keys provided to you.
+
+"Licensor" means the owner and developer of Data Wrangler.
+
+"Licensee" means the individual or organisation that has purchased or been
+granted a licence to use the Software.
+
+"Licence Key" means the unique key issued to the Licensee to activate the
+Software.
+
+"Trial Licence" means a temporary, limited-duration licence granted for
+evaluation purposes.
+
+"Full Licence" means a paid annual licence granting continued use of the
+Software.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+2. GRANT OF LICENCE
+
+Subject to the terms of this Agreement and payment of applicable fees, the
+Licensor grants the Licensee a non-exclusive, non-transferable, limited licence
+to:
+
+  (a) Install and use the Software on a single machine; and
+  (b) Use the Software solely for the Licensee's internal business purposes.
+
+Trial Licences are granted for a period of thirty (30) days from the date of
+first activation and are subject to the same restrictions as Full Licences.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+3. RESTRICTIONS
+
+The Licensee shall NOT:
+
+  (a) Copy, reproduce, or distribute the Software or Licence Key to any third
+      party;
+  (b) Sublicence, rent, lease, lend, or sell the Software;
+  (c) Reverse engineer, decompile, disassemble, or attempt to derive the source
+      code of the Software, except to the extent permitted by applicable law;
+  (d) Modify, adapt, translate, or create derivative works based on the
+      Software;
+  (e) Remove or alter any proprietary notices, labels, or marks on the
+      Software;
+  (f) Use the Software for any unlawful purpose or in violation of any
+      applicable laws or regulations;
+  (g) Share, publish, or disclose the Licence Key to any third party.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+4. OWNERSHIP
+
+The Software is licensed, not sold. The Licensor retains all right, title, and
+interest in and to the Software, including all intellectual property rights.
+This Agreement does not grant the Licensee any rights to the Licensor's
+trademarks, service marks, or trade names.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5. LICENCE FEES AND TERM
+
+  (a) Full Licences are priced at USD $25,000 per machine per year.
+  (b) Licences are valid for twelve (12) months from the date of activation.
+  (c) Licences must be renewed annually to continue using the Software.
+  (d) The Licensor reserves the right to change pricing upon renewal with
+      thirty (30) days written notice.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+6. UPDATES AND SUPPORT
+
+  (a) The Licensor may provide updates, patches, or new versions of the
+      Software at its sole discretion.
+  (b) Support is provided via email at support@datawrangler.com during normal
+      business hours.
+  (c) The Licensor is under no obligation to provide updates, enhancements, or
+      technical support unless separately agreed in writing.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+7. DATA AND PRIVACY
+
+  (a) The Software connects to the Licensor's licence validation service to
+      verify the Licence Key. This check transmits only the Licence Key — no
+      personal data, database contents, or business data is transmitted.
+  (b) The Licensee is solely responsible for the security and integrity of
+      their database credentials and connection strings.
+  (c) The Licensor does not have access to, and accepts no responsibility for,
+      any data processed by the Software.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+8. DISCLAIMER OF WARRANTIES
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. THE LICENSOR DOES NOT
+WARRANT THAT THE SOFTWARE WILL BE ERROR-FREE, UNINTERRUPTED, OR FREE OF
+HARMFUL COMPONENTS.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+9. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR
+PUNITIVE DAMAGES, INCLUDING BUT NOT LIMITED TO LOSS OF DATA, LOSS OF PROFITS,
+OR BUSINESS INTERRUPTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+INABILITY TO USE THE SOFTWARE, EVEN IF THE LICENSOR HAS BEEN ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGES.
+
+THE LICENSOR'S TOTAL LIABILITY TO THE LICENSEE FOR ANY CLAIMS ARISING UNDER
+THIS AGREEMENT SHALL NOT EXCEED THE AMOUNT PAID BY THE LICENSEE FOR THE
+SOFTWARE IN THE TWELVE (12) MONTHS PRECEDING THE CLAIM.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+10. TERMINATION
+
+  (a) This Agreement is effective until terminated.
+  (b) The Licensor may terminate this Agreement immediately upon written notice
+      if the Licensee breaches any term of this Agreement.
+  (c) The Licensor may revoke the Licence Key remotely if the Licensee is found
+      to be in breach of this Agreement.
+  (d) Upon termination, the Licensee must cease all use of the Software and
+      destroy all copies in their possession.
+  (e) Sections 4, 7, 8, 9, and 11 shall survive termination.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+11. GOVERNING LAW
+
+This Agreement shall be governed by and construed in accordance with the laws
+of the State of Texas, United States, without regard to its conflict of law
+provisions. Any disputes arising under this Agreement shall be subject to the
+exclusive jurisdiction of the courts located in Texas.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+12. ENTIRE AGREEMENT
+
+This Agreement constitutes the entire agreement between the parties with
+respect to the Software and supersedes all prior or contemporaneous
+understandings, agreements, representations, and warranties. No modification
+of this Agreement shall be binding unless in writing and signed by both parties.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+13. CONTACT
+
+For licensing enquiries, support, or legal notices:
+
+  Email : support@datawrangler.com
+  Web   : https://perrystokes00.github.io/data-wrangler-v1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Copyright © 2026 Data Wrangler. All rights reserved.

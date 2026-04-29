@@ -1,0 +1,234 @@
+{
+  "table_schema": "dbo",
+  "table_name": "R_WELL_STATUS",
+  "pk_columns": [
+    "STATUS_TYPE",
+    "STATUS"
+  ],
+  "rows": [
+    {
+      "STATUS_TYPE": "Oil",
+      "STATUS": "Location"
+    },
+    {
+      "STATUS_TYPE": "Oil",
+      "STATUS": "Producer"
+    },
+    {
+      "STATUS_TYPE": "Oil",
+      "STATUS": "Shut In"
+    },
+    {
+      "STATUS_TYPE": "Oil",
+      "STATUS": "Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Oil",
+      "STATUS": "Plugged and Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Oil",
+      "STATUS": "Suspended"
+    },
+    {
+      "STATUS_TYPE": "Oil",
+      "STATUS": "Reclaimed"
+    },
+    {
+      "STATUS_TYPE": "Oil",
+      "STATUS": "In-Active"
+    },
+    {
+      "STATUS_TYPE": "Oil & Gas",
+      "STATUS": "Location"
+    },
+    {
+      "STATUS_TYPE": "Oil & Gas",
+      "STATUS": "Producer"
+    },
+    {
+      "STATUS_TYPE": "Oil & Gas",
+      "STATUS": "Shut In"
+    },
+    {
+      "STATUS_TYPE": "Oil & Gas",
+      "STATUS": "Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Oil & Gas",
+      "STATUS": "Plugged and Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Oil & Gas",
+      "STATUS": "Suspended"
+    },
+    {
+      "STATUS_TYPE": "Oil & Gas",
+      "STATUS": "Reclaimed"
+    },
+    {
+      "STATUS_TYPE": "Oil & Gas",
+      "STATUS": "In-Active"
+    },
+    {
+      "STATUS_TYPE": "Oil & Condensate",
+      "STATUS": "Location"
+    },
+    {
+      "STATUS_TYPE": "Oil & Condensate",
+      "STATUS": "Producer"
+    },
+    {
+      "STATUS_TYPE": "Oil & Condensate",
+      "STATUS": "Shut In"
+    },
+    {
+      "STATUS_TYPE": "Oil & Condensate",
+      "STATUS": "Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Oil & Condensate",
+      "STATUS": "Plugged and Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Oil & Condensate",
+      "STATUS": "Suspended"
+    },
+    {
+      "STATUS_TYPE": "Oil & Condensate",
+      "STATUS": "Reclaimed"
+    },
+    {
+      "STATUS_TYPE": "Oil & Condensate",
+      "STATUS": "In-Active"
+    },
+    {
+      "STATUS_TYPE": "Gas",
+      "STATUS": "Location"
+    },
+    {
+      "STATUS_TYPE": "Gas",
+      "STATUS": "Producer"
+    },
+    {
+      "STATUS_TYPE": "Gas",
+      "STATUS": "Shut In"
+    },
+    {
+      "STATUS_TYPE": "Gas",
+      "STATUS": "Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Gas",
+      "STATUS": "Plugged and Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Gas",
+      "STATUS": "Suspended"
+    },
+    {
+      "STATUS_TYPE": "Gas",
+      "STATUS": "Reclaimed"
+    },
+    {
+      "STATUS_TYPE": "Gas",
+      "STATUS": "In-Active"
+    },
+    {
+      "STATUS_TYPE": "Gas & Condensate",
+      "STATUS": "Location"
+    },
+    {
+      "STATUS_TYPE": "Gas & Condensate",
+      "STATUS": "Producer"
+    },
+    {
+      "STATUS_TYPE": "Gas & Condensate",
+      "STATUS": "Shut In"
+    },
+    {
+      "STATUS_TYPE": "Gas & Condensate",
+      "STATUS": "Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Gas & Condensate",
+      "STATUS": "Plugged and Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Gas & Condensate",
+      "STATUS": "Suspended"
+    },
+    {
+      "STATUS_TYPE": "Gas & Condensate",
+      "STATUS": "Reclaimed"
+    },
+    {
+      "STATUS_TYPE": "Gas & Condensate",
+      "STATUS": "In-Active"
+    },
+    {
+      "STATUS_TYPE": "Condensate",
+      "STATUS": "Location"
+    },
+    {
+      "STATUS_TYPE": "Condensate",
+      "STATUS": "Producer"
+    },
+    {
+      "STATUS_TYPE": "Condensate",
+      "STATUS": "Shut In"
+    },
+    {
+      "STATUS_TYPE": "Condensate",
+      "STATUS": "Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Condensate",
+      "STATUS": "Plugged and Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Condensate",
+      "STATUS": "Suspended"
+    },
+    {
+      "STATUS_TYPE": "Condensate",
+      "STATUS": "Reclaimed"
+    },
+    {
+      "STATUS_TYPE": "Condensate",
+      "STATUS": "In-Active"
+    },
+    {
+      "STATUS_TYPE": "Water",
+      "STATUS": "Location"
+    },
+    {
+      "STATUS_TYPE": "Water",
+      "STATUS": "Producer"
+    },
+    {
+      "STATUS_TYPE": "Water",
+      "STATUS": "Shut In"
+    },
+    {
+      "STATUS_TYPE": "Water",
+      "STATUS": "Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Water",
+      "STATUS": "Plugged and Abandoned"
+    },
+    {
+      "STATUS_TYPE": "Water",
+      "STATUS": "Suspended"
+    },
+    {
+      "STATUS_TYPE": "Water",
+      "STATUS": "Reclaimed"
+    },
+    {
+      "STATUS_TYPE": "Water",
+      "STATUS": "In-Active"
+    }
+  ]
+}

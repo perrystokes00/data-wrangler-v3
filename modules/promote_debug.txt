@@ -1,0 +1,402 @@
+--- field stg=stg_field ---
+  field_id = [FIELD_ID]
+  field_name = [FIELD_NAME]
+  group_field_id = [GROUP_FIELD_ID]
+--- r_water_datum stg=stg_r_water_datum ---
+  water_datum = [WATER_DATUM]
+--- r_location_type stg=stg_r_location_type ---
+  location_type = [LOCATION_TYPE]
+--- business_associate stg=stg_business_associate ---
+  ba_long_name = [BA_LONG_NAME]
+  business_associate_id = [BUSINESS_ASSOCIATE_ID]
+--- well stg=stg_kgs_wells_load_all ---
+  abandonment_date = [ABANDONMENT_DATE]
+  assigned_field = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  completion_date = [COMPLETION_DATE]
+  deepest_depth = [DEEPEST_DEPTH]
+  drill_td = [DEEPEST_DEPTH]
+  elev_ref_datum = [ELEV_REF_DATUM]
+  final_td = [DEEPEST_DEPTH]
+  ground_elev = [GROUND_ELEVATION]
+  kb_elev = [KB_ELEV]
+  lease_name = [LEASE_NAME]
+--- field stg=stg_field ---
+  field_id = [FIELD_ID]
+  field_name = [FIELD_NAME]
+  group_field_id = [GROUP_FIELD_ID]
+  stg_cols=['FIELD_ID', 'FIELD_NAME', 'GROUP_FIELD_ID', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('field_id', '[FIELD_ID]'), ('field_name', '[FIELD_NAME]'), ('group_field_id', '[GROUP_FIELD_ID]')]
+--- r_water_datum stg=stg_r_water_datum ---
+  water_datum = [WATER_DATUM]
+  stg_cols=['SOURCE', 'WATER_DATUM', '_BATCH_LOADED_AT']
+  pairs after filter: [('water_datum', '[WATER_DATUM]')]
+--- r_location_type stg=stg_r_location_type ---
+  location_type = [LOCATION_TYPE]
+  stg_cols=['LOCATION_TYPE', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('location_type', '[LOCATION_TYPE]')]
+--- business_associate stg=stg_business_associate ---
+  ba_long_name = [BA_LONG_NAME]
+  business_associate_id = [BUSINESS_ASSOCIATE_ID]
+  stg_cols=['BA_LONG_NAME', 'BUSINESS_ASSOCIATE_ID', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('ba_long_name', '[BA_LONG_NAME]'), ('business_associate_id', '[BUSINESS_ASSOCIATE_ID]')]
+--- well stg=stg_kgs_wells_load_all ---
+  abandonment_date = [ABANDONMENT_DATE]
+  assigned_field = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  completion_date = [COMPLETION_DATE]
+  deepest_depth = [DEEPEST_DEPTH]
+  drill_td = [DEEPEST_DEPTH]
+  elev_ref_datum = [ELEV_REF_DATUM]
+  final_td = [DEEPEST_DEPTH]
+  ground_elev = [GROUND_ELEVATION]
+  kb_elev = [KB_ELEV]
+  lease_name = [LEASE_NAME]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('abandonment_date', '[ABANDONMENT_DATE]'), ('assigned_field', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('completion_date', '[COMPLETION_DATE]'), ('deepest_depth', '[DEEPEST_DEPTH]'), ('drill_td', '[DEEPEST_DEPTH]')]
+--- field stg=stg_field ---
+  field_id = [FIELD_ID]
+  field_name = [FIELD_NAME]
+  group_field_id = [GROUP_FIELD_ID]
+  stg_cols=['FIELD_ID', 'FIELD_NAME', 'GROUP_FIELD_ID', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('field_id', '[FIELD_ID]'), ('field_name', '[FIELD_NAME]'), ('group_field_id', '[GROUP_FIELD_ID]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [group_field_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [FIELD_ID], [FIELD_NAME], [GROUP_FIELD_ID], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_field] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[field]
+--- r_water_datum stg=stg_r_water_datum ---
+  water_datum = [WATER_DATUM]
+  stg_cols=['SOURCE', 'WATER_DATUM', '_BATCH_LOADED_AT']
+  pairs after filter: [('water_datum', '[WATER_DATUM]')]
+  INSERT SQL:
+INSERT INTO [dbo].[r_water_datum] ([water_datum], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [WATER_DATUM], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_r_water_datum] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[r_water_datum] tgt WHERE tgt.[WATER_DATUM] = src
+--- r_location_type stg=stg_r_location_type ---
+  location_type = [LOCATION_TYPE]
+  stg_cols=['LOCATION_TYPE', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('location_type', '[LOCATION_TYPE]')]
+  INSERT SQL:
+INSERT INTO [dbo].[r_location_type] ([location_type], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [LOCATION_TYPE], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_r_location_type] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[r_location_type] tgt WHERE tgt.[LOCATION
+--- business_associate stg=stg_business_associate ---
+  ba_long_name = [BA_LONG_NAME]
+  business_associate_id = [BUSINESS_ASSOCIATE_ID]
+  stg_cols=['BA_LONG_NAME', 'BUSINESS_ASSOCIATE_ID', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('ba_long_name', '[BA_LONG_NAME]'), ('business_associate_id', '[BUSINESS_ASSOCIATE_ID]')]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_long_name], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [BA_LONG_NAME], [BUSINESS_ASSOCIATE_ID], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_business_associate] src
+WHERE NOT EXISTS (SELECT 
+--- well stg=stg_kgs_wells_load_all ---
+  abandonment_date = [ABANDONMENT_DATE]
+  assigned_field = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  completion_date = [COMPLETION_DATE]
+  deepest_depth = [DEEPEST_DEPTH]
+  drill_td = [DEEPEST_DEPTH]
+  elev_ref_datum = [ELEV_REF_DATUM]
+  final_td = [DEEPEST_DEPTH]
+  ground_elev = [GROUND_ELEVATION]
+  kb_elev = [KB_ELEV]
+  lease_name = [LEASE_NAME]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('abandonment_date', '[ABANDONMENT_DATE]'), ('assigned_field', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('completion_date', '[COMPLETION_DATE]'), ('deepest_depth', '[DEEPEST_DEPTH]'), ('drill_td', '[DEEPEST_DEPTH]')]
+  INSERT SQL:
+INSERT INTO [dbo].[well] ([abandonment_date], [assigned_field], [completion_date], [deepest_depth], [drill_td], [elev_ref_datum], [final_td], [ground_elev], [kb_elev], [lease_name], [lease_num], [location_type], [operator], [spud_date], [surface_latitude], [surface_longitude], [uwi], [well_name], [well_num], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date])
+SELECT TRY_CONVERT(DATETIME2, NULLIF(LTRIM(RTR
+--- field stg=stg_field ---
+  field_id = [FIELD_ID]
+  field_name = [FIELD_NAME]
+  group_field_id = [GROUP_FIELD_ID]
+  stg_cols=['FIELD_ID', 'FIELD_NAME', 'GROUP_FIELD_ID', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('field_id', '[FIELD_ID]'), ('field_name', '[FIELD_NAME]'), ('group_field_id', '[GROUP_FIELD_ID]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [group_field_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [FIELD_ID], [FIELD_NAME], [GROUP_FIELD_ID], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_field] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[field]
+--- r_water_datum stg=stg_r_water_datum ---
+  water_datum = [WATER_DATUM]
+  stg_cols=['SOURCE', 'WATER_DATUM', '_BATCH_LOADED_AT']
+  pairs after filter: [('water_datum', '[WATER_DATUM]')]
+  INSERT SQL:
+INSERT INTO [dbo].[r_water_datum] ([water_datum], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [WATER_DATUM], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_r_water_datum] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[r_water_datum] tgt WHERE tgt.[WATER_DATUM] = src
+--- r_location_type stg=stg_r_location_type ---
+  location_type = [LOCATION_TYPE]
+  stg_cols=['LOCATION_TYPE', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('location_type', '[LOCATION_TYPE]')]
+  INSERT SQL:
+INSERT INTO [dbo].[r_location_type] ([location_type], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [LOCATION_TYPE], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_r_location_type] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[r_location_type] tgt WHERE tgt.[LOCATION
+--- business_associate stg=stg_business_associate ---
+  ba_long_name = [BA_LONG_NAME]
+  business_associate_id = [BUSINESS_ASSOCIATE_ID]
+  stg_cols=['BA_LONG_NAME', 'BUSINESS_ASSOCIATE_ID', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('ba_long_name', '[BA_LONG_NAME]'), ('business_associate_id', '[BUSINESS_ASSOCIATE_ID]')]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_long_name], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [BA_LONG_NAME], [BUSINESS_ASSOCIATE_ID], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_business_associate] src
+WHERE NOT EXISTS (SELECT 
+--- well stg=stg_kgs_wells_load_all ---
+  abandonment_date = [ABANDONMENT_DATE]
+  assigned_field = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  completion_date = [COMPLETION_DATE]
+  deepest_depth = [DEEPEST_DEPTH]
+  elev_ref_datum = [ELEV_REF_DATUM]
+  kb_elev = [KB_ELEV]
+  lease_name = [LEASE_NAME]
+  location_type = [LOCATION_TYPE]
+  operator = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  spud_date = [SPUD_DATE]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('abandonment_date', '[ABANDONMENT_DATE]'), ('assigned_field', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('completion_date', '[COMPLETION_DATE]'), ('deepest_depth', '[DEEPEST_DEPTH]'), ('elev_ref_datum', '[ELEV_REF_DATUM]')]
+  INSERT SQL:
+INSERT INTO [dbo].[well] ([abandonment_date], [assigned_field], [completion_date], [deepest_depth], [elev_ref_datum], [kb_elev], [lease_name], [location_type], [operator], [spud_date], [surface_latitude], [surface_longitude], [uwi], [well_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date])
+SELECT TRY_CONVERT(DATETIME2, NULLIF(LTRIM(RTRIM([ABANDONMENT_DATE])), '')), CONVERT(CHAR(40), HASHBYTES('SHA1
+--- field stg=stg_field ---
+  field_id = [FIELD_ID]
+  field_name = [FIELD_NAME]
+  group_field_id = [GROUP_FIELD_ID]
+  stg_cols=['FIELD_ID', 'FIELD_NAME', 'GROUP_FIELD_ID', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('field_id', '[FIELD_ID]'), ('field_name', '[FIELD_NAME]'), ('group_field_id', '[GROUP_FIELD_ID]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [group_field_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [FIELD_ID], [FIELD_NAME], [GROUP_FIELD_ID], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_field] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[field]
+--- r_water_datum stg=stg_r_water_datum ---
+  water_datum = [WATER_DATUM]
+  stg_cols=['SOURCE', 'WATER_DATUM', '_BATCH_LOADED_AT']
+  pairs after filter: [('water_datum', '[WATER_DATUM]')]
+  INSERT SQL:
+INSERT INTO [dbo].[r_water_datum] ([water_datum], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [WATER_DATUM], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_r_water_datum] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[r_water_datum] tgt WHERE tgt.[WATER_DATUM] = src
+--- r_location_type stg=stg_r_location_type ---
+  location_type = [LOCATION_TYPE]
+  stg_cols=['LOCATION_TYPE', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('location_type', '[LOCATION_TYPE]')]
+  INSERT SQL:
+INSERT INTO [dbo].[r_location_type] ([location_type], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [LOCATION_TYPE], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_r_location_type] src
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[r_location_type] tgt WHERE tgt.[LOCATION
+--- business_associate stg=stg_business_associate ---
+  ba_long_name = [BA_LONG_NAME]
+  business_associate_id = [BUSINESS_ASSOCIATE_ID]
+  stg_cols=['BA_LONG_NAME', 'BUSINESS_ASSOCIATE_ID', 'SOURCE', '_BATCH_LOADED_AT']
+  pairs after filter: [('ba_long_name', '[BA_LONG_NAME]'), ('business_associate_id', '[BUSINESS_ASSOCIATE_ID]')]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_long_name], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [BA_LONG_NAME], [BUSINESS_ASSOCIATE_ID], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[stg_business_associate] src
+WHERE NOT EXISTS (SELECT 
+--- field stg=stg_kgs_wells_load_all ---
+  field_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  field_name = [ASSIGNED_FIELD]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('field_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('field_name', '[ASSIGNED_FIELD]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2), [ASSIGNED_FIELD], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[
+--- business_associate stg=stg_kgs_wells_load_all ---
+  ba_abbreviation = [CURR_OPERATOR]
+  business_associate_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('ba_abbreviation', '[CURR_OPERATOR]'), ('business_associate_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)")]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_abbreviation], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [CURR_OPERATOR], CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2), 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2
+--- well stg=stg_kgs_wells_load_all ---
+  abandonment_date = [ABANDONMENT_DATE]
+  assigned_field = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  completion_date = [COMPLETION_DATE]
+  deepest_depth = [DEEPEST_DEPTH]
+  elev_ref_datum = [ELEV_REF_DATUM]
+  kb_elev = [KB_ELEV]
+  lease_name = [LEASE_NAME]
+  location_type = [LOCATION_TYPE]
+  operator = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  spud_date = [SPUD_DATE]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('abandonment_date', '[ABANDONMENT_DATE]'), ('assigned_field', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('completion_date', '[COMPLETION_DATE]'), ('deepest_depth', '[DEEPEST_DEPTH]'), ('elev_ref_datum', '[ELEV_REF_DATUM]')]
+  INSERT SQL:
+INSERT INTO [dbo].[well] ([abandonment_date], [assigned_field], [completion_date], [deepest_depth], [elev_ref_datum], [kb_elev], [lease_name], [location_type], [operator], [spud_date], [surface_latitude], [surface_longitude], [uwi], [well_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date])
+SELECT TRY_CONVERT(DATETIME2, NULLIF(LTRIM(RTRIM([ABANDONMENT_DATE])), '')), CONVERT(CHAR(40), HASHBYTES('SHA1
+--- field stg=stg_kgs_wells_load_all ---
+  field_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  field_name = [ASSIGNED_FIELD]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('field_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('field_name', '[ASSIGNED_FIELD]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2), [ASSIGNED_FIELD], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[
+--- business_associate stg=stg_kgs_wells_load_all ---
+  ba_abbreviation = [CURR_OPERATOR]
+  business_associate_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('ba_abbreviation', '[CURR_OPERATOR]'), ('business_associate_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)")]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_abbreviation], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [CURR_OPERATOR], CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2), 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2
+--- well stg=stg_kgs_wells_load_all ---
+  abandonment_date = [ABANDONMENT_DATE]
+  assigned_field = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  completion_date = [COMPLETION_DATE]
+  deepest_depth = [DEEPEST_DEPTH]
+  elev_ref_datum = [ELEV_REF_DATUM]
+  kb_elev = [KB_ELEV]
+  lease_name = [LEASE_NAME]
+  location_type = [LOCATION_TYPE]
+  operator = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  spud_date = [SPUD_DATE]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('abandonment_date', '[ABANDONMENT_DATE]'), ('assigned_field', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('completion_date', '[COMPLETION_DATE]'), ('deepest_depth', '[DEEPEST_DEPTH]'), ('elev_ref_datum', '[ELEV_REF_DATUM]')]
+  INSERT SQL:
+INSERT INTO [dbo].[well] ([abandonment_date], [assigned_field], [completion_date], [deepest_depth], [elev_ref_datum], [kb_elev], [lease_name], [location_type], [operator], [spud_date], [surface_latitude], [surface_longitude], [uwi], [well_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date])
+SELECT TRY_CONVERT(DATETIME2, NULLIF(LTRIM(RTRIM([ABANDONMENT_DATE])), '')), CONVERT(CHAR(40), HASHBYTES('SHA1
+--- business_associate stg=stg_kgs_wells_load_all ---
+  ba_abbreviation = [CURR_OPERATOR]
+  business_associate_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('ba_abbreviation', '[CURR_OPERATOR]'), ('business_associate_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)")]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_abbreviation], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [CURR_OPERATOR], CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2), 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2
+--- field stg=stg_kgs_wells_load_all ---
+  field_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  field_name = [ASSIGNED_FIELD]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('field_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('field_name', '[ASSIGNED_FIELD]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2), [ASSIGNED_FIELD], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[
+--- well stg=stg_kgs_wells_load_all ---
+  abandonment_date = [ABANDONMENT_DATE]
+  assigned_field = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  completion_date = [COMPLETION_DATE]
+  deepest_depth = [DEEPEST_DEPTH]
+  elev_ref_datum = [ELEV_REF_DATUM]
+  kb_elev = [KB_ELEV]
+  lease_name = [LEASE_NAME]
+  location_type = [LOCATION_TYPE]
+  operator = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  spud_date = [SPUD_DATE]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('abandonment_date', '[ABANDONMENT_DATE]'), ('assigned_field', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('completion_date', '[COMPLETION_DATE]'), ('deepest_depth', '[DEEPEST_DEPTH]'), ('elev_ref_datum', '[ELEV_REF_DATUM]')]
+  INSERT SQL:
+INSERT INTO [dbo].[well] ([abandonment_date], [assigned_field], [completion_date], [deepest_depth], [elev_ref_datum], [kb_elev], [lease_name], [location_type], [operator], [spud_date], [surface_latitude], [surface_longitude], [uwi], [well_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date])
+SELECT TRY_CONVERT(DATETIME2, NULLIF(LTRIM(RTRIM([ABANDONMENT_DATE])), '')), CONVERT(CHAR(40), HASHBYTES('SHA1
+--- field stg=stg_kgs_wells_load_all ---
+  field_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  field_name = [ASSIGNED_FIELD]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('field_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('field_name', '[ASSIGNED_FIELD]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2), [ASSIGNED_FIELD], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[
+--- business_associate stg=stg_kgs_wells_load_all ---
+  ba_abbreviation = [CURR_OPERATOR]
+  business_associate_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('ba_abbreviation', '[CURR_OPERATOR]'), ('business_associate_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)")]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_abbreviation], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [CURR_OPERATOR], CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2), 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2
+--- field stg=stg_kgs_wells_load_all ---
+  field_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  field_name = [ASSIGNED_FIELD]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('field_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('field_name', '[ASSIGNED_FIELD]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2), [ASSIGNED_FIELD], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM [stg].[
+--- business_associate stg=stg_kgs_wells_load_all ---
+  ba_abbreviation = [CURR_OPERATOR]
+  business_associate_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('ba_abbreviation', '[CURR_OPERATOR]'), ('business_associate_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)")]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_abbreviation], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT [CURR_OPERATOR], CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2), 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2
+--- field stg=stg_kgs_wells_load_all ---
+  field_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  field_name = [ASSIGNED_FIELD]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('field_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('field_name', '[ASSIGNED_FIELD]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT LEFT(CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2), 40), LEFT([ASSIGNED_FIELD], 255), 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM
+--- business_associate stg=stg_kgs_wells_load_all ---
+  ba_abbreviation = [CURR_OPERATOR]
+  business_associate_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('ba_abbreviation', '[CURR_OPERATOR]'), ('business_associate_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)")]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_abbreviation], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT LEFT([CURR_OPERATOR], 12), LEFT(CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2), 40), 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099
+--- field stg=stg_kgs_wells_load_all ---
+  field_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  field_name = [ASSIGNED_FIELD]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('field_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('field_name', '[ASSIGNED_FIELD]')]
+  INSERT SQL:
+INSERT INTO [dbo].[field] ([field_id], [field_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT dedup.[field_id], dedup.[field_name], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM (
+    SELECT DISTINCT LEFT(CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2), 40) AS [field_id], LEFT([ASSIGNED_FIELD], 255) AS [field_name]
+    FROM [stg].[stg_kgs_wells_load_all] src
+    WHERE src.[ASSIGNED_FIELD] IS NOT NULL AND LTRIM(RTRIM(src.[ASSIGNED_FIELD])) <> ''
+) dedup
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[field] tgt WHERE tgt.[FIELD_ID] = dedup.[FIELD_ID])
+--- business_associate stg=stg_kgs_wells_load_all ---
+  ba_abbreviation = [CURR_OPERATOR]
+  business_associate_id = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('ba_abbreviation', '[CURR_OPERATOR]'), ('business_associate_id', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)")]
+  INSERT SQL:
+INSERT INTO [dbo].[business_associate] ([ba_abbreviation], [business_associate_id], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date], [source])
+SELECT dedup.[ba_abbreviation], dedup.[business_associate_id], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2), 'PPDM_LOADER'
+FROM (
+    SELECT DISTINCT LEFT([CURR_OPERATOR], 12) AS [ba_abbreviation], LEFT(CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2), 40) AS [business_associate_id]
+    FROM [stg].[stg_kgs_wells_load_all] src
+    WHERE src.[CURR_OPERATOR] IS NOT NULL AND LTRIM(RTRIM(src.[CURR_OPERATOR])) <> ''
+) dedup
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[business_associate] tgt WHERE tgt.[BUSINESS_ASSOCIATE_ID] = dedup.[BUSINESS_ASSOCIATE_ID])
+--- well stg=stg_kgs_wells_load_all ---
+  abandonment_date = [ABANDONMENT_DATE]
+  assigned_field = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)
+  completion_date = [COMPLETION_DATE]
+  deepest_depth = [DEEPEST_DEPTH]
+  elev_ref_datum = [ELEV_REF_DATUM]
+  kb_elev = [KB_ELEV]
+  lease_name = [LEASE_NAME]
+  location_type = [LOCATION_TYPE]
+  operator = CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2)
+  spud_date = [SPUD_DATE]
+  stg_cols=['ABANDONMENT_DATE', 'API_DASH', 'API_NODASH', 'ASSIGNED_FIELD', 'COMPLETION_DATE', 'CURR_OPERATOR', 'DEEPEST_DEPTH', 'ELEV_REF_DATUM', 'FEET_EAST', 'FEET_NORTH']
+  pairs after filter: [('abandonment_date', '[ABANDONMENT_DATE]'), ('assigned_field', "CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2)"), ('completion_date', '[COMPLETION_DATE]'), ('deepest_depth', '[DEEPEST_DEPTH]'), ('elev_ref_datum', '[ELEV_REF_DATUM]')]
+  INSERT SQL:
+INSERT INTO [dbo].[well] ([abandonment_date], [assigned_field], [completion_date], [deepest_depth], [elev_ref_datum], [kb_elev], [lease_name], [location_type], [operator], [spud_date], [surface_latitude], [surface_longitude], [uwi], [well_name], [active_ind], [ppdm_guid], [row_changed_by], [row_changed_date], [row_created_by], [row_created_date], [row_effective_date], [row_expiry_date])
+SELECT dedup.[abandonment_date], dedup.[assigned_field], dedup.[completion_date], dedup.[deepest_depth], dedup.[elev_ref_datum], dedup.[kb_elev], dedup.[lease_name], dedup.[location_type], dedup.[operator], dedup.[spud_date], dedup.[surface_latitude], dedup.[surface_longitude], dedup.[uwi], dedup.[well_name], 'Y', NEWID(), 'PPDM_LOADER', GETUTCDATE(), 'PPDM_LOADER', GETUTCDATE(), CAST('1900-01-01' AS DATETIME2), CAST('2099-12-31' AS DATETIME2)
+FROM (
+    SELECT DISTINCT TRY_CONVERT(DATETIME2, NULLIF(LTRIM(RTRIM([ABANDONMENT_DATE])), '')) AS [abandonment_date], LEFT(CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([ASSIGNED_FIELD]))) AS NVARCHAR(4000))), 2), 40) AS [assigned_field], TRY_CONVERT(DATETIME2, NULLIF(LTRIM(RTRIM([COMPLETION_DATE])), '')) AS [completion_date], [DEEPEST_DEPTH] AS [deepest_depth], LEFT([ELEV_REF_DATUM], 40) AS [elev_ref_datum], [KB_ELEV] AS [kb_elev], LEFT([LEASE_NAME], 255) AS [lease_name], LEFT([LOCATION_TYPE], 40) AS [location_type], LEFT(CONVERT(CHAR(40), HASHBYTES('SHA1', CAST(UPPER(LTRIM(RTRIM([CURR_OPERATOR]))) AS NVARCHAR(4000))), 2), 40) AS [operator], TRY_CONVERT(DATETIME2, NULLIF(LTRIM(RTRIM([SPUD_DATE])), '')) AS [spud_date], [SURFACE_LATITUDE] AS [surface_latitude], [SURFACE_LONGITUDE] AS [surface_longitude], LEFT([UWI], 40) AS [uwi], LEFT([WELL_NAME], 255) AS [well_name]
+    FROM [stg].[stg_kgs_wells_load_all] src
+    WHERE src.[UWI] IS NOT NULL AND LTRIM(RTRIM(src.[UWI])) <> ''
+) dedup
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[well] tgt WHERE tgt.[UWI] = dedup.[UWI])

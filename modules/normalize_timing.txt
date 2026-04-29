@@ -1,0 +1,53 @@
+0.0s — start
+0.01s — build_sql done — 1 statements
+26.02s — UPDATE 1 done — 26.01s · 4390 chars
+26.03s — all UPDATEs done
+26.05s — user_rules done — 0 stmts
+65.78s — read-back done
+0.0s — start
+0.0s — build_sql done — 1 statements
+26.01s — UPDATE 1 done — 26.0s · 4390 chars
+26.01s — all UPDATEs done
+26.03s — user_rules done — 0 stmts
+26.03s — done — skipping read-back
+0.0s — start
+0.27s — build_sql done — 5 statements
+0.28s — stmt 1 done — 0.01s · 110 chars
+24.54s — stmt 2 done — 24.27s · 4458 chars
+27.98s — stmt 3 done — 3.44s · 97 chars
+28.0s — stmt 4 done — 0.02s · 41 chars
+28.7s — stmt 5 done — 0.7s · 74 chars
+28.7s — all UPDATEs done
+28.72s — user_rules done — 0 stmts
+28.72s — done — skipping read-back
+0.0s — start
+0.09s — build_sql done — 5 statements
+0.11s — stmt 1 done — 0.01s · 110 chars
+24.69s — stmt 2 done — 24.58s · 4458 chars
+27.63s — stmt 3 done — 2.94s · 97 chars
+27.64s — stmt 4 done — 0.01s · 41 chars
+27.66s — stmt 5 done — 0.02s · 74 chars
+27.67s — all UPDATEs done
+27.68s — user_rules done — 0 stmts
+27.68s — done — skipping read-back
+0.01s — start
+0.25s — build_sql done — 5 statements
+0.27s — stmt 1 done — 0.02s · 110 chars
+24.75s — stmt 2 done — 24.48s · 4458 chars
+28.01s — stmt 3 done — 3.26s · 97 chars
+28.03s — stmt 4 done — 0.02s · 41 chars
+28.63s — stmt 5 done — 0.6s · 74 chars
+28.64s — all UPDATEs done
+28.65s — user_rules done — 0 stmts
+28.65s — done — skipping read-back
+0.0s — start
+  cols=39 trim=39 upper=2 date=4 date_style=120
+0.26s — build_sql done — 5 statements · cols=39
+0.27s — stmt 1 done — 0.0s · 110 chars
+24.41s — stmt 2 done — 24.14s · 4458 chars
+27.63s — stmt 3 done — 3.22s · 97 chars
+27.66s — stmt 4 done — 0.02s · 41 chars
+28.26s — stmt 5 done — 0.6s · 74 chars
+28.27s — all UPDATEs done
+28.28s — user_rules done — 0 stmts
+28.28s — done — skipping read-back
