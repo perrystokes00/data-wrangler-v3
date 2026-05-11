@@ -89,13 +89,31 @@ _LAS_WELL_FIELDS = {
 }
 
 # Scoring weights
+#
+# UWI handling is binary-ish:
+#   - UWI matches dv_well → +40 (highest single signal of usefulness)
+#   - UWI in header but no match → +30 (still valuable identifier)
+#   - No UWI at all → 0
+#
+# The remaining 60 points reward intrinsic document quality, NOT linkage
+# to the existing well master. This is the document-centric philosophy:
+# a file with rich location metadata is valuable in its own right, even
+# if it doesn't tie back to dv_well.
+#
+# state/county scoring is included even though current extractors don't
+# populate those fields for LOG/SEIS/PDF/SHP files. The weights are
+# intentional — they signal what extraction SHOULD capture, and the
+# scoring will start crediting these fields automatically once
+# extract_file_fields() is fixed to populate them.
 _SCORE_WEIGHTS = {
-    'uwi_in_db':      40,
-    'uwi_in_header':  20,
+    'uwi_in_db':      40,   # UWI in header AND matched in dv_well
+    'uwi_in_header':  30,   # UWI in header, dv_well match not required
     'well_name':      10,
     'operator':       10,
-    'lat_lon':        10,
+    'lat_lon':        20,   # bumped from 10 — location is high-value
     'depth_range':    10,
+    'state':           5,   # new — aspirational until extraction populates it
+    'county':          5,   # new — aspirational until extraction populates it
 }
 
 
@@ -506,6 +524,15 @@ def score_file(fields: dict, engine=None) -> dict:
         score += _SCORE_WEIGHTS['lat_lon']
     else:
         issues.append("No coordinates in header")
+
+    # State and county scoring — document-centric signals that don't depend
+    # on dv_well. Currently aspirational: extract_file_fields() does not yet
+    # populate these for LOG/SEIS/PDF/SHP files. Score will activate
+    # automatically once extraction is fixed to fill them in.
+    if fields.get('state'):
+        score += _SCORE_WEIGHTS['state']
+    if fields.get('county'):
+        score += _SCORE_WEIGHTS['county']
 
     sd = fields.get('start_depth')
     ed = fields.get('stop_depth')

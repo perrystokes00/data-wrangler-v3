@@ -1659,9 +1659,37 @@ def run(engine=None):
     )
 
     if _need_wells:
-        _status.info("⏳ Querying wells from DataView…")
-        _wells_raw = _qry_wells(engine)
-        st.session_state["_wells_already_loaded"] = True
+        # Wells mode (or AI filter / dropdown active) — load the full well list.
+        # This is the 30-second hit. Show a real progress bar at the top so the
+        # user knows the system is working and roughly when it'll finish.
+        #
+        # We can't get true progress from a single SQL query, so we use a
+        # three-stage indicator with sleeps that match typical execution time:
+        #   0–40%  during DB query (the slowest part)
+        #   40–80% during JSON parse
+        #   80–100% during pandas conversion + cache write
+        # If the query takes longer than expected, we hold at 80% until done.
+        _prog_msg = _status.empty()
+        _prog_bar = st.progress(0)
+        _prog_msg.info("⏳ Loading wells from DataView — this takes ~20-30 seconds…")
+        try:
+            _prog_bar.progress(10)
+            _wells_raw = _qry_wells(engine)
+            _prog_bar.progress(80)
+            _prog_msg.info(f"⏳ Processing {len(_wells_raw):,} wells…")
+            st.session_state["_wells_already_loaded"] = True
+            _prog_bar.progress(100)
+            _prog_msg.success(f"✅ Loaded {len(_wells_raw):,} wells")
+        except Exception as _wq_err:
+            _prog_msg.error(f"Wells load failed: {_wq_err}")
+            _wells_raw = []
+        finally:
+            # Clear the progress widgets shortly after completion. They've
+            # served their purpose; leaving them clutters the UI.
+            import time
+            time.sleep(0.5)
+            _prog_bar.empty()
+            _prog_msg.empty()
     else:
         # Grid mode default — show grid immediately, skip the heavy query
         _wells_raw = []
@@ -1684,7 +1712,20 @@ def run(engine=None):
     # render path doesn't use it, and the dropdowns/filters gracefully show
     # empty lists.
     wells_df  = pd.DataFrame(_display_wells) if _display_wells else pd.DataFrame()
-    uwi_index = {w["uwi"]: w for w in _wells_raw}  # full index for scout tickets
+    # Build the UWI index used for scout-ticket lookups.
+    # Two sources:
+    #   1. _wells_raw — the full wells list (populated only in Wells mode or
+    #      when filters force a wells load)
+    #   2. tray_well_data — the shadow cache populated by grid-cell drills
+    #      and rectangle drills (always available regardless of mode)
+    # We combine them so scout tickets work whether the user is in grid mode
+    # with drilled wells OR in wells mode with the full list.
+    uwi_index = {w["uwi"]: w for w in _wells_raw}
+    _shadow = st.session_state.get("tray_well_data", {})
+    for _u, _w in _shadow.items():
+        # Tray-shadow wells fill in only where _wells_raw didn't already cover
+        if _u not in uwi_index:
+            uwi_index[_u] = _w
 
     # ── Top bar above map: Background | Zoom | Query ────────────────
     top1, top2, top3 = st.columns([1, 1, 2])
@@ -2035,15 +2076,31 @@ def run(engine=None):
                 zoom0 = 11  # initial guess, fit_bounds will adjust precisely
 
         if _viewport_bounds is None:
-            # No viewport — use zoom_target or full-dataset centroid
+            # No viewport — use zoom_target or compute a sensible default.
             if zoom_target and zoom_target.get("lat"):
                 lat0  = zoom_target["lat"]
                 lon0  = zoom_target["lon"]
                 zoom0 = zoom_target["zoom"]
-            else:
-                lat0  = dff["lat"].mean() if not dff.empty else 31.5
-                lon0  = dff["lon"].mean() if not dff.empty else -102.5
+            elif not dff.empty:
+                # Wells loaded — center on their centroid
+                lat0  = dff["lat"].mean()
+                lon0  = dff["lon"].mean()
                 zoom0 = 7
+            else:
+                # Wells NOT loaded yet (lazy-load, grid mode). Center on the
+                # grid data instead — it's cheap and tells us where the
+                # actual data lives. Fall back to a US center only if even
+                # the grid query fails.
+                try:
+                    _center_grid = _qry_well_grid(engine, step=0.035)
+                    if not _center_grid.empty:
+                        lat0 = float(_center_grid["center_lat"].mean())
+                        lon0 = float(_center_grid["center_lon"].mean())
+                        zoom0 = 7
+                    else:
+                        lat0, lon0, zoom0 = 39.0, -98.0, 4  # US centroid
+                except Exception:
+                    lat0, lon0, zoom0 = 39.0, -98.0, 4  # US centroid
 
         # Build map — show progress so user knows it's working
         _msg = st.empty()
@@ -2069,78 +2126,85 @@ def run(engine=None):
                 control=False, opacity=1.0,
             ).add_to(m)
 
-        if not dff.empty:
-            # Mode dispatch — set by the radio toggle above the map.
-            # "grid" = fast aggregated overview (server-side binning)
-            # "wells" = full clusters + viewport markers (current default behavior)
-            _map_mode = st.session_state.get("map_mode", "wells")
+        # Mode dispatch — set by the radio toggle above the map.
+        # "grid" = fast aggregated overview (server-side binning)
+        # "wells" = full clusters + viewport markers (full wells list)
+        # Grid mode doesn't need the wells dataframe — only wells mode does.
+        # Default to grid on first load (matches session_state init below).
+        _map_mode = st.session_state.get("map_mode", "grid")
 
-            if _map_mode == "grid":
-                _msg.info(f"🔵 Loading grid overview…")
+        if _map_mode == "grid":
+            _msg.info(f"🔵 Loading grid overview…")
+            try:
+                _grid_df = _qry_well_grid(engine, step=0.035)
+                _cell_count = _add_well_grid(m, _grid_df, step=0.035)
+                if _cell_count:
+                    _msg.info(
+                        f"🔵 Grid: {_cell_count:,} cells · "
+                        f"{int(_grid_df['well_count'].sum()):,} wells aggregated"
+                    )
+                else:
+                    _msg.info("🔵 No wells to aggregate")
+            except Exception as _e:
+                st.warning(f"Grid render skipped: {_e}")
+                # If grid fails for any reason, fall back to wells mode
+                # so the user still sees something.
+                st.session_state["map_mode"] = "wells"
+
+            # In grid mode, drilled wells (from clicking a cell or drawing
+            # a rectangle) still render as yellow markers ON TOP of the
+            # grid. This way the user can drill into one cell and see its
+            # individuals while the rest of the map keeps showing the grid
+            # density layer.
+            _viewport_uwis = st.session_state.get("viewport_uwis", [])
+            if _viewport_uwis:
                 try:
-                    _grid_df = _qry_well_grid(engine, step=0.035)
-                    _cell_count = _add_well_grid(m, _grid_df, step=0.035)
-                    if _cell_count:
-                        _msg.info(
-                            f"🔵 Grid: {_cell_count:,} cells · "
-                            f"{int(_grid_df['well_count'].sum()):,} wells aggregated"
-                        )
-                    else:
-                        _msg.info("🔵 No wells to aggregate")
-                except Exception as _e:
-                    st.warning(f"Grid render skipped: {_e}")
-                    # If grid fails for any reason, fall back to wells mode
-                    # so the user still sees something.
-                    st.session_state["map_mode"] = "wells"
-
-                # In grid mode, drilled wells (from clicking a cell or drawing
-                # a rectangle) still render as yellow markers ON TOP of the
-                # grid. This way the user can drill into one cell and see its
-                # individuals while the rest of the map keeps showing the grid
-                # density layer.
-                _viewport_uwis = st.session_state.get("viewport_uwis", [])
-                if _viewport_uwis:
-                    try:
-                        # Build a small dataframe from the tray-shadow cache
-                        # (the wells query that populated viewport_uwis also
-                        # stashed full data in tray_well_data). This avoids
-                        # needing the full wells_df in grid mode.
-                        shadow = st.session_state.get("tray_well_data", {})
-                        if shadow:
-                            _vp_df = pd.DataFrame([
-                                shadow[u] for u in _viewport_uwis
-                                if u in shadow
-                            ])
-                            if not _vp_df.empty:
-                                _vp_count = _add_viewport_wells(
-                                    m, _vp_df, _viewport_uwis
+                    # Build a small dataframe from the tray-shadow cache
+                    # (the wells query that populated viewport_uwis also
+                    # stashed full data in tray_well_data). This avoids
+                    # needing the full wells_df in grid mode.
+                    shadow = st.session_state.get("tray_well_data", {})
+                    if shadow:
+                        _vp_df = pd.DataFrame([
+                            shadow[u] for u in _viewport_uwis
+                            if u in shadow
+                        ])
+                        if not _vp_df.empty:
+                            _vp_count = _add_viewport_wells(
+                                m, _vp_df, _viewport_uwis
+                            )
+                            if _vp_count:
+                                _msg.info(
+                                    f"🔵 Grid + {_vp_count:,} drilled wells"
                                 )
-                                if _vp_count:
-                                    _msg.info(
-                                        f"🔵 Grid + {_vp_count:,} drilled wells"
-                                    )
-                    except Exception as _e:
-                        st.warning(f"Drilled wells render skipped: {_e}")
-                        st.session_state["viewport_uwis"] = []
-            else:
-                _msg.info(f"📍 Placing {len(dff):,} wells…")
-                # Cluster layer EXCLUDES viewport wells — those render as individual
-                # markers via _add_viewport_wells below, so we don't want duplicate
-                # bubbles underneath them.
-                _viewport_uwis = st.session_state.get("viewport_uwis", [])
-                _add_wells(m, dff, exclude_uwis=_viewport_uwis)
+                except Exception as _e:
+                    st.warning(f"Drilled wells render skipped: {_e}")
+                    st.session_state["viewport_uwis"] = []
+        elif not dff.empty:
+            # Wells mode — needs the full wells dataframe (lazy-loaded
+            # when user picked Wells mode or used a filter).
+            _msg.info(f"📍 Placing {len(dff):,} wells…")
+            # Cluster layer EXCLUDES viewport wells — those render as individual
+            # markers via _add_viewport_wells below, so we don't want duplicate
+            # bubbles underneath them.
+            _viewport_uwis = st.session_state.get("viewport_uwis", [])
+            _add_wells(m, dff, exclude_uwis=_viewport_uwis)
 
-                # Viewport wells — individual markers for the user's last-drawn
-                # rectangle. Rendered ON TOP of the cluster layer. Wrapped in
-                # try/except so a viewport-render bug doesn't break the whole map.
-                if _viewport_uwis:
-                    try:
-                        _vp_count = _add_viewport_wells(m, dff, _viewport_uwis)
-                        if _vp_count:
-                            _msg.info(f"📍 Viewport: {_vp_count:,} individual markers")
-                    except Exception as _e:
-                        st.warning(f"Viewport render skipped: {_e}")
-                        st.session_state["viewport_uwis"] = []
+            # Viewport wells — individual markers for the user's last-drawn
+            # rectangle. Rendered ON TOP of the cluster layer. Wrapped in
+            # try/except so a viewport-render bug doesn't break the whole map.
+            if _viewport_uwis:
+                try:
+                    _vp_count = _add_viewport_wells(m, dff, _viewport_uwis)
+                    if _vp_count:
+                        _msg.info(f"📍 Viewport: {_vp_count:,} individual markers")
+                except Exception as _e:
+                    st.warning(f"Viewport render skipped: {_e}")
+                    st.session_state["viewport_uwis"] = []
+        else:
+            # Wells mode but no wells loaded yet — this shouldn't happen
+            # because lazy-load fires when mode == "wells", but be defensive.
+            _msg.info("📍 Wells mode — no wells loaded yet")
 
         if "db_trajectories" in active_db:
             _msg.info("📐 Loading trajectories…")
