@@ -285,6 +285,122 @@ def _qry_basins(_engine) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=None, show_spinner=False)
+def _qry_well_grid(_engine, step: float = 0.035) -> pd.DataFrame:
+    """
+    Server-side spatial aggregation for the hex/grid overview layer.
+
+    Bins wells into square cells of `step` degrees (default 0.1° ~= 7 miles).
+    Returns one row per non-empty cell with the well count and the centroid
+    of wells inside it.
+
+    This replaces the 50K-marker payload with ~100-500 polygons. Massive
+    serialization win on every Streamlit rerun.
+
+    Columns returned:
+        lat_bin    — south edge of the cell (degrees)
+        lon_bin    — west edge of the cell (degrees)
+        well_count — wells inside the cell
+        center_lat — centroid of those wells (for tooltip placement)
+        center_lon — centroid of those wells
+
+    Cache TTL is None — the grid only changes when wells are loaded/deleted,
+    so we hold it for the whole session.
+    """
+    sql = """
+        DECLARE @step FLOAT = :step;
+        SELECT
+            FLOOR(w.surface_latitude  / @step) * @step AS lat_bin,
+            FLOOR(w.surface_longitude / @step) * @step AS lon_bin,
+            COUNT(*) AS well_count,
+            AVG(w.surface_latitude)  AS center_lat,
+            AVG(w.surface_longitude) AS center_lon
+        FROM dataview.dv_well w
+        WHERE w.surface_latitude  IS NOT NULL
+          AND w.surface_longitude IS NOT NULL
+        GROUP BY FLOOR(w.surface_latitude  / @step),
+                 FLOOR(w.surface_longitude / @step)
+    """
+    try:
+        with _engine.connect() as con:
+            return pd.read_sql(text(sql), con, params={"step": step})
+    except Exception as exc:
+        st.error(f"Well grid query failed: {exc}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _qry_wells_in_bbox(
+    _engine,
+    min_lat: float, max_lat: float,
+    min_lon: float, max_lon: float,
+    limit: int = 1000,
+) -> tuple[list[dict], int]:
+    """
+    Rectangle drill-down query: wells inside the given bounding box.
+
+    Returns a tuple of (wells, total_count):
+      wells       — list of well dicts, capped at `limit`
+      total_count — true count of wells in the bbox (may exceed len(wells))
+
+    The total_count tells the UI whether to warn about the cap being hit.
+    The IX_dv_well_lat_lon composite index makes this query fast (sub-second
+    for any reasonable bbox even at 4M scale).
+
+    Cache TTL is 300s — bbox queries are user-driven by rectangle drawing,
+    so we don't need session-long persistence but want to avoid re-firing
+    if the same rectangle is drawn twice in quick succession.
+    """
+    # COUNT first — cheap with the index, tells us whether to return rows
+    count_sql = """
+        SELECT COUNT(*) AS n
+        FROM dataview.dv_well w
+        WHERE w.surface_latitude  BETWEEN :min_lat AND :max_lat
+          AND w.surface_longitude BETWEEN :min_lon AND :max_lon
+    """
+    rows_sql = """
+        SELECT TOP (:limit)
+               w.uwi, w.well_name, w.well_type, w.well_status,
+               w.surface_latitude  AS lat,
+               w.surface_longitude AS lon,
+               w.county, w.province_state, w.api_num,
+               CONVERT(VARCHAR(10), w.spud_date,       120) AS spud_date,
+               CONVERT(VARCHAR(10), w.completion_date, 120) AS completion_date,
+               w.final_td, w.depth_datum,
+               w.operator_ba_id, w.field_id,
+               ISNULL(ba.ba_name,   'Unknown') AS operator_name,
+               ISNULL(f.field_name, 'Unknown') AS field_name
+        FROM dataview.dv_well w
+        LEFT JOIN dataview.dv_business_associate ba ON ba.ba_id = w.operator_ba_id
+        LEFT JOIN dataview.dv_field f ON f.field_id = w.field_id
+        WHERE w.surface_latitude  BETWEEN :min_lat AND :max_lat
+          AND w.surface_longitude BETWEEN :min_lon AND :max_lon
+        ORDER BY w.well_name
+        FOR JSON PATH
+    """
+    params = {
+        "min_lat": float(min_lat), "max_lat": float(max_lat),
+        "min_lon": float(min_lon), "max_lon": float(max_lon),
+        "limit": int(limit),
+    }
+    try:
+        with _engine.connect().execution_options(timeout=30) as con:
+            total = con.execute(text(count_sql), params).scalar() or 0
+            if total == 0:
+                return [], 0
+
+            # FOR JSON PATH returns multi-row varchar chunks — concat them
+            json_rows = con.execute(text(rows_sql), params).fetchall()
+            if not json_rows:
+                return [], total
+            json_str = "".join(r[0] for r in json_rows)
+            wells = json.loads(json_str)
+            return wells, int(total)
+    except Exception as exc:
+        st.error(f"Bbox query failed: {exc}")
+        return [], 0
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _qry_trajectories(_engine) -> pd.DataFrame:
     try:
@@ -423,6 +539,115 @@ def _trajectory_geojson(df: pd.DataFrame) -> dict:
 # =============================================================================
 # LAYER RENDERERS
 # =============================================================================
+
+def _add_well_grid(m, df: pd.DataFrame, step: float = 0.035) -> int:
+    """
+    Renders the grid-density overview layer.
+
+    Each non-empty cell becomes a square polygon, fill-colored by log-scaled
+    well count (light yellow → dark red). Tooltip shows the count.
+
+    This is the low-load alternative to FastMarkerCluster. Use when the user
+    wants a fast overview of where the wells are, without paying the cost of
+    serializing 50K individual markers.
+
+    Args:
+        m: folium.Map
+        df: result of _qry_well_grid — columns lat_bin, lon_bin, well_count,
+            center_lat, center_lon
+        step: cell size in degrees (must match what was used to bin)
+
+    Returns:
+        number of cells rendered (for status caption)
+    """
+    if df is None or df.empty:
+        return 0
+
+    import math
+
+    # Log scale because counts span 4 orders of magnitude (1 to 3,400+).
+    # Linear scaling makes most cells indistinguishable pale.
+    max_count = max(int(df["well_count"].max()), 1)
+    log_max = math.log10(max_count + 1) or 1.0
+
+    # Sequential colormap: pale yellow (few wells) → deep red (many wells).
+    # 6 stops gives smooth visual gradation without rendering noise.
+    palette = [
+        "#fff5b1",  # 0.0 — very pale yellow
+        "#fed976",  # 0.2
+        "#feb24c",  # 0.4
+        "#fd8d3c",  # 0.6
+        "#fc4e2a",  # 0.8
+        "#b10026",  # 1.0 — deep red
+    ]
+
+    def _color_for(count: int) -> str:
+        # Normalize log-count to 0..1, then pick palette bin
+        if count <= 0:
+            return palette[0]
+        t = math.log10(count + 1) / log_max
+        idx = min(int(t * len(palette)), len(palette) - 1)
+        return palette[idx]
+
+    grid_group = folium.FeatureGroup(name="Wells (grid)", show=True)
+
+    for row in df.itertuples(index=False):
+        try:
+            lat_bin = float(row.lat_bin)
+            lon_bin = float(row.lon_bin)
+            count = int(row.well_count)
+        except (TypeError, ValueError):
+            continue
+
+        color = _color_for(count)
+        bounds = [
+            [lat_bin, lon_bin],                  # SW corner
+            [lat_bin + step, lon_bin + step],    # NE corner
+        ]
+
+        # Render as a Rectangle with a count tooltip and a clickable popup
+        # that the click handler recognizes. The "GRID_CELL|lat|lon|step|count"
+        # marker is the contract — the click handler in run() regex-matches
+        # this and fires a bbox query for that cell.
+        # We embed the marker via a hidden span (not data attribute) because
+        # modern streamlit-folium strips HTML attributes from popup data.
+        # The visible markup is human-friendly; the marker is plain text.
+        _cell_marker = (
+            f"GRID_CELL|{lat_bin:.4f}|{lon_bin:.4f}|{step:.4f}|{count}"
+        )
+        folium.Rectangle(
+            bounds=bounds,
+            color="#7f1d1d",      # dark red border
+            weight=0.5,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.55,
+            tooltip=folium.Tooltip(
+                f"<b>{count:,}</b> wells — click to drill in",
+                sticky=True,
+            ),
+            popup=folium.Popup(
+                (
+                    f"<div style='font-size:11px;line-height:1.4'>"
+                    f"<b style='font-size:12px'>{count:,} wells</b><br>"
+                    f"<span style='color:#475569'>"
+                    f"Area: {lat_bin:.2f}–{lat_bin + step:.2f}°N, "
+                    f"{lon_bin:.2f}–{lon_bin + step:.2f}°W</span><br>"
+                    f"<span style='color:#1a73e8;font-size:10px;font-weight:600'>"
+                    f"📍 Loading individual wells…</span><br>"
+                    # The marker — kept visible (small/grey) so streamlit-folium
+                    # preserves it in the click return. Don't remove this line.
+                    f"<span style='font-size:8px;color:#cbd5e1;"
+                    f"font-family:monospace'>{_cell_marker}</span>"
+                    f"</div>"
+                ),
+                max_width=260,
+            ),
+        ).add_to(grid_group)
+
+    grid_group.add_to(m)
+    return len(df)
+
 
 def _add_wells(m, df, exclude_uwis=None):
     """
@@ -1421,23 +1646,44 @@ def run(engine=None):
 
     _status = st.empty()
 
-    _status.info("⏳ Querying wells from DataView…")
-    _wells_raw = _qry_wells(engine)
+    # Lazy-load strategy: skip the expensive _qry_wells call on first load.
+    # Grid mode is the default and doesn't need the full wells list — the
+    # density polygons come from a separate aggregation query (sub-second).
+    # We only pay the cost of pulling 50K+ wells when the user actually
+    # needs them: switches to Wells mode, opens search dropdowns, or uses
+    # the AI filter.
+    _need_wells = (
+        st.session_state.get("map_mode", "grid") == "wells"
+        or st.session_state.get("ai_filter_spec") is not None
+        or st.session_state.get("_wells_already_loaded", False)
+    )
+
+    if _need_wells:
+        _status.info("⏳ Querying wells from DataView…")
+        _wells_raw = _qry_wells(engine)
+        st.session_state["_wells_already_loaded"] = True
+    else:
+        # Grid mode default — show grid immediately, skip the heavy query
+        _wells_raw = []
+
     _status.info("⏳ Loading spatial layers…")
     shp_layers = _load_shp_layers(engine)
     _status.empty()
     # counts_df loaded lazily below — only when a "Has X" filter is active
 
-    if not _wells_raw:
-        st.warning("No wells found with valid coordinates.")
-        return
-
-    # Apply AI filter if active
+    # Apply AI filter if active (only meaningful when we have wells)
     _ai_spec = st.session_state.get("ai_filter_spec")
-    _display_wells = _apply_ai_filter(_wells_raw, _ai_spec) if _ai_spec else _wells_raw
+    _display_wells = (
+        _apply_ai_filter(_wells_raw, _ai_spec)
+        if _ai_spec and _wells_raw
+        else _wells_raw
+    )
 
-    # Convert list-of-dicts to DataFrame once — all downstream code unchanged
-    wells_df  = pd.DataFrame(_display_wells)
+    # Convert list-of-dicts to DataFrame once — all downstream code unchanged.
+    # In lazy-load case this is an empty DataFrame, which is fine: the grid
+    # render path doesn't use it, and the dropdowns/filters gracefully show
+    # empty lists.
+    wells_df  = pd.DataFrame(_display_wells) if _display_wells else pd.DataFrame()
     uwi_index = {w["uwi"]: w for w in _wells_raw}  # full index for scout tickets
 
     # ── Top bar above map: Background | Zoom | Query ────────────────
@@ -1468,19 +1714,27 @@ def run(engine=None):
                               key="wm_query_sel")
         qtype  = QUERIES[qsel]
         qvalue = None
-        if qtype == "operator":
+        # If user picks a query type that needs wells data, trigger a load
+        # on the next rerun (no-op if already loaded).
+        if qtype in ("operator", "field", "county", "well_type",
+                     "has_tops", "has_prod", "has_dst",
+                     "has_survey", "has_core", "has_petro"):
+            if not st.session_state.get("_wells_already_loaded", False):
+                st.session_state["_wells_already_loaded"] = True
+                st.rerun()
+        if qtype == "operator" and not wells_df.empty:
             qvalue = st.selectbox("Operator",
                 sorted(wells_df["operator_name"].dropna().unique()),
                 key="wm_q_op", label_visibility="collapsed")
-        elif qtype == "field":
+        elif qtype == "field" and not wells_df.empty:
             qvalue = st.selectbox("Field",
                 sorted(wells_df["field_name"].dropna().unique()),
                 key="wm_q_field", label_visibility="collapsed")
-        elif qtype == "county":
+        elif qtype == "county" and not wells_df.empty:
             qvalue = st.selectbox("County",
                 sorted(wells_df["county"].dropna().unique()),
                 key="wm_q_county", label_visibility="collapsed")
-        elif qtype == "well_type":
+        elif qtype == "well_type" and not wells_df.empty:
             qvalue = st.selectbox("Well Type",
                 sorted(wells_df["well_type"].dropna().unique()),
                 key="wm_q_wtype", label_visibility="collapsed")
@@ -1531,8 +1785,16 @@ def run(engine=None):
             elif st.session_state.get("ai_filter_desc"):
                 st.success(f"✅ {st.session_state['ai_filter_desc']}")
 
-        # Status
-        all_statuses = sorted(wells_df["well_status"].dropna().unique())
+        # Status — when wells haven't been loaded yet, use the standard
+        # PPDM 3.9 status set. This lets the user toggle status filters
+        # without paying the cost of loading all 50K wells upfront.
+        if not wells_df.empty:
+            all_statuses = sorted(wells_df["well_status"].dropna().unique())
+        else:
+            all_statuses = [
+                "ACTIVE", "DRY", "LOCATION", "PLUGGED",
+                "PLUGGED_AND_ABANDONED", "UNKNOWN",
+            ]
         for o in all_statuses:
             if f"wm_status_{o}" not in st.session_state:
                 st.session_state[f"wm_status_{o}"] = True
@@ -1656,38 +1918,91 @@ def run(engine=None):
 
 
     with mapcol:
-        # Safe filter — if nothing selected fall back to show all
+        # Safe filter — if nothing selected fall back to show all.
+        # When wells_df is empty (lazy-load not yet fired), dff is also empty
+        # — the grid render path handles that gracefully (it has its own data).
         _ss  = sel_statuses or list(all_statuses)
-        mask = wells_df["well_status"].isin(_ss)
         counts_df = pd.DataFrame()  # populated lazily if a has_X filter is used
-        if qtype == "operator" and qvalue:
-            mask &= wells_df["operator_name"] == qvalue
-        elif qtype == "field" and qvalue:
-            mask &= wells_df["field_name"] == qvalue
-        elif qtype == "county" and qvalue:
-            mask &= wells_df["county"] == qvalue
-        elif qtype == "well_type" and qvalue:
-            mask &= wells_df["well_type"] == qvalue
-        elif qtype in ("has_tops","has_prod","has_dst",
-                       "has_survey","has_core","has_petro"):
-            if "counts_df" not in st.session_state or st.session_state.counts_df is None:
-                with st.spinner("Loading sub-data counts..."):
-                    st.session_state.counts_df = _qry_counts(engine)
-            counts_df = st.session_state.get("counts_df", pd.DataFrame())
-        if qtype in ("has_tops","has_prod","has_dst",
-                       "has_survey","has_core","has_petro") and not counts_df.empty:
-            col = {"has_tops":"top_count","has_prod":"prod_count",
-                   "has_dst":"dst_count","has_survey":"top_count",
-                   "has_core":"core_count","has_petro":"petro_count"}[qtype]
-            mask &= wells_df["uwi"].isin(
-                counts_df[counts_df[col] > 0]["uwi"].tolist())
-        dff = wells_df[mask].copy()
+        if wells_df.empty:
+            dff = wells_df  # empty
+        else:
+            mask = wells_df["well_status"].isin(_ss)
+            if qtype == "operator" and qvalue:
+                mask &= wells_df["operator_name"] == qvalue
+            elif qtype == "field" and qvalue:
+                mask &= wells_df["field_name"] == qvalue
+            elif qtype == "county" and qvalue:
+                mask &= wells_df["county"] == qvalue
+            elif qtype == "well_type" and qvalue:
+                mask &= wells_df["well_type"] == qvalue
+            elif qtype in ("has_tops","has_prod","has_dst",
+                           "has_survey","has_core","has_petro"):
+                if "counts_df" not in st.session_state or st.session_state.counts_df is None:
+                    with st.spinner("Loading sub-data counts..."):
+                        st.session_state.counts_df = _qry_counts(engine)
+                counts_df = st.session_state.get("counts_df", pd.DataFrame())
+            if qtype in ("has_tops","has_prod","has_dst",
+                           "has_survey","has_core","has_petro") and not counts_df.empty:
+                col = {"has_tops":"top_count","has_prod":"prod_count",
+                       "has_dst":"dst_count","has_survey":"top_count",
+                       "has_core":"core_count","has_petro":"petro_count"}[qtype]
+                mask &= wells_df["uwi"].isin(
+                    counts_df[counts_df[col] > 0]["uwi"].tolist())
+            dff = wells_df[mask].copy()
 
-        st.caption(
-            f"**{len(dff)}** of **{len(wells_df)}** wells"
-            + (f" · {len(active_db)} DB layer(s)" if active_db else "")
-            + (f" · {len(active_shp)} shapefile(s)" if active_shp else "")
-        )
+        # Caption — show different info depending on whether wells are loaded
+        if wells_df.empty:
+            st.caption(
+                "🔵 Grid mode (wells not yet loaded — switch to Wells mode "
+                "or pick a filter to load the full well list)"
+                + (f" · {len(active_db)} DB layer(s)" if active_db else "")
+                + (f" · {len(active_shp)} shapefile(s)" if active_shp else "")
+            )
+        else:
+            st.caption(
+                f"**{len(dff)}** of **{len(wells_df)}** wells"
+                + (f" · {len(active_db)} DB layer(s)" if active_db else "")
+                + (f" · {len(active_shp)} shapefile(s)" if active_shp else "")
+            )
+
+        # ── Map mode toggle ──────────────────────────────────────────────
+        # Grid mode: server-aggregated density polygons (~100s, fast).
+        # Wells mode: full cluster markers + rectangle viewport (original).
+        # Default to grid because on first load (50K wells) it's dramatically
+        # faster to serialize. User can flip to Wells when they need detail.
+        _mode_col, _mode_help = st.columns([3, 5])
+        with _mode_col:
+            _current_mode = st.session_state.get("map_mode", "grid")
+            _new_mode = st.radio(
+                "Map mode",
+                options=["grid", "wells"],
+                index=0 if _current_mode == "grid" else 1,
+                format_func=lambda m: (
+                    "🔵 Grid (overview)" if m == "grid"
+                    else "📍 Wells (detail)"
+                ),
+                horizontal=True,
+                label_visibility="collapsed",
+                key="map_mode_radio",
+            )
+            if _new_mode != _current_mode:
+                st.session_state["map_mode"] = _new_mode
+                # Switching modes invalidates the viewport markers / drawn
+                # bounds — wipe them so they don't linger across modes.
+                if _new_mode == "grid":
+                    st.session_state["viewport_uwis"] = []
+                st.rerun()
+        with _mode_help:
+            if _new_mode == "grid":
+                st.caption(
+                    "🔵 **Grid mode** — fast aggregated overview. "
+                    "Switch to 📍 Wells to draw a rectangle and inspect individual wells."
+                )
+            else:
+                st.caption(
+                    "📍 **Wells mode** — cluster bubbles + rectangle viewport. "
+                    "Switch to 🔵 Grid for a fast aggregated view of all wells."
+                )
 
         # Build map — always show basemap even if no wells
         bm   = BASEMAPS.get(basemap, BASEMAPS["OpenStreetMap"])
@@ -1755,24 +2070,77 @@ def run(engine=None):
             ).add_to(m)
 
         if not dff.empty:
-            _msg.info(f"📍 Placing {len(dff):,} wells…")
-            # Cluster layer EXCLUDES viewport wells — those render as individual
-            # markers via _add_viewport_wells below, so we don't want duplicate
-            # bubbles underneath them.
-            _viewport_uwis = st.session_state.get("viewport_uwis", [])
-            _add_wells(m, dff, exclude_uwis=_viewport_uwis)
+            # Mode dispatch — set by the radio toggle above the map.
+            # "grid" = fast aggregated overview (server-side binning)
+            # "wells" = full clusters + viewport markers (current default behavior)
+            _map_mode = st.session_state.get("map_mode", "wells")
 
-            # Viewport wells — individual markers for the user's last-drawn
-            # rectangle. Rendered ON TOP of the cluster layer. Wrapped in
-            # try/except so a viewport-render bug doesn't break the whole map.
-            if _viewport_uwis:
+            if _map_mode == "grid":
+                _msg.info(f"🔵 Loading grid overview…")
                 try:
-                    _vp_count = _add_viewport_wells(m, dff, _viewport_uwis)
-                    if _vp_count:
-                        _msg.info(f"📍 Viewport: {_vp_count:,} individual markers")
+                    _grid_df = _qry_well_grid(engine, step=0.035)
+                    _cell_count = _add_well_grid(m, _grid_df, step=0.035)
+                    if _cell_count:
+                        _msg.info(
+                            f"🔵 Grid: {_cell_count:,} cells · "
+                            f"{int(_grid_df['well_count'].sum()):,} wells aggregated"
+                        )
+                    else:
+                        _msg.info("🔵 No wells to aggregate")
                 except Exception as _e:
-                    st.warning(f"Viewport render skipped: {_e}")
-                    st.session_state["viewport_uwis"] = []
+                    st.warning(f"Grid render skipped: {_e}")
+                    # If grid fails for any reason, fall back to wells mode
+                    # so the user still sees something.
+                    st.session_state["map_mode"] = "wells"
+
+                # In grid mode, drilled wells (from clicking a cell or drawing
+                # a rectangle) still render as yellow markers ON TOP of the
+                # grid. This way the user can drill into one cell and see its
+                # individuals while the rest of the map keeps showing the grid
+                # density layer.
+                _viewport_uwis = st.session_state.get("viewport_uwis", [])
+                if _viewport_uwis:
+                    try:
+                        # Build a small dataframe from the tray-shadow cache
+                        # (the wells query that populated viewport_uwis also
+                        # stashed full data in tray_well_data). This avoids
+                        # needing the full wells_df in grid mode.
+                        shadow = st.session_state.get("tray_well_data", {})
+                        if shadow:
+                            _vp_df = pd.DataFrame([
+                                shadow[u] for u in _viewport_uwis
+                                if u in shadow
+                            ])
+                            if not _vp_df.empty:
+                                _vp_count = _add_viewport_wells(
+                                    m, _vp_df, _viewport_uwis
+                                )
+                                if _vp_count:
+                                    _msg.info(
+                                        f"🔵 Grid + {_vp_count:,} drilled wells"
+                                    )
+                    except Exception as _e:
+                        st.warning(f"Drilled wells render skipped: {_e}")
+                        st.session_state["viewport_uwis"] = []
+            else:
+                _msg.info(f"📍 Placing {len(dff):,} wells…")
+                # Cluster layer EXCLUDES viewport wells — those render as individual
+                # markers via _add_viewport_wells below, so we don't want duplicate
+                # bubbles underneath them.
+                _viewport_uwis = st.session_state.get("viewport_uwis", [])
+                _add_wells(m, dff, exclude_uwis=_viewport_uwis)
+
+                # Viewport wells — individual markers for the user's last-drawn
+                # rectangle. Rendered ON TOP of the cluster layer. Wrapped in
+                # try/except so a viewport-render bug doesn't break the whole map.
+                if _viewport_uwis:
+                    try:
+                        _vp_count = _add_viewport_wells(m, dff, _viewport_uwis)
+                        if _vp_count:
+                            _msg.info(f"📍 Viewport: {_vp_count:,} individual markers")
+                    except Exception as _e:
+                        st.warning(f"Viewport render skipped: {_e}")
+                        st.session_state["viewport_uwis"] = []
 
         if "db_trajectories" in active_db:
             _msg.info("📐 Loading trajectories…")
@@ -1984,28 +2352,38 @@ def run(engine=None):
         _msg.info("🌐 Rendering map in browser…")
         # Try use_container_width if available (streamlit-folium >= 0.18),
         # else fall back to width=None which lets st_folium auto-size.
+        # We subscribe to a few different click signals so we catch whichever
+        # streamlit-folium populates for Rectangle (grid cell) clicks vs
+        # CircleMarker (well) clicks vs map background clicks.
+        _ret = [
+            "last_object_clicked_popup",
+            "last_object_clicked",
+            "last_clicked",
+            "all_drawings",
+        ]
         try:
             map_data = st_folium(
                 m, height=500, use_container_width=True,
-                returned_objects=["last_object_clicked_popup", "all_drawings"],
+                returned_objects=_ret,
                 key="well_map_folium",
             )
         except TypeError:
             # Older streamlit-folium that doesn't support use_container_width
             map_data = st_folium(
                 m, width=None, height=500,
-                returned_objects=["last_object_clicked_popup", "all_drawings"],
+                returned_objects=_ret,
                 key="well_map_folium",
             )
         _msg.empty()
 
         # Instructional hint for the spatial select tools
         st.caption(
-            "💡 **Map:** Cluster bubbles show all 50K wells (click a cluster to "
-            "zoom in). To select a region: click the **rectangle** icon (left "
-            "toolbar), click two corners on the map — wells inside the box render "
-            "as individual yellow-ringed markers and are added to the tray. "
-            "Click any individual marker for its scout ticket. **Esc** cancels."
+            "💡 **Map:** **🔵 Grid mode** shows density (each colored cell = "
+            "wells in that area). **Click a cell** to drill into its wells "
+            "(up to 1,000). **Draw a rectangle** to drill into a custom area "
+            "(up to 2,000 wells). Click any individual well marker to add "
+            "to the tray. Open the tray to view scout tickets and export. "
+            "**Esc** cancels rectangle drawing."
         )
 
         # ── Session state init ────────────────────────────────────────
@@ -2013,6 +2391,10 @@ def run(engine=None):
             st.session_state.clicked_uwis = []
         if "scout_uwi" not in st.session_state:
             st.session_state.scout_uwi = None
+        if "map_mode" not in st.session_state:
+            # Default to fast aggregated overview. User can switch to wells
+            # mode for the rectangle drill-down workflow.
+            st.session_state.map_mode = "grid"
 
         # ── Spatial select — rectangle/polygon drawn on map ─────────
         # On rectangle release: (1) save UWIs as a "viewport" — these wells
@@ -2052,90 +2434,184 @@ def run(engine=None):
                         min_lat, max_lat = min(lats), max(lats)
                         min_lon, max_lon = min(lons), max(lons)
 
-                        # Find all wells in the bounding box (with point-in-polygon
-                        # for non-rectangular shapes)
-                        def _point_in_polygon(lat, lon, ring):
-                            """Ray casting — works for rectangles and polygons."""
-                            inside = False
-                            n = len(ring)
-                            j = n - 1
-                            for i in range(n):
-                                xi, yi = ring[i][0], ring[i][1]
-                                xj, yj = ring[j][0], ring[j][1]
-                                if ((yi > lat) != (yj > lat) and
-                                        lon < (xj - xi) * (lat - yi) / (yj - yi + 1e-10) + xi):
-                                    inside = not inside
-                                j = i
-                            return inside
-
-                        selected = [
-                            w["uwi"] for w in _display_wells
-                            if (min_lat <= (w.get("lat") or 0) <= max_lat and
-                                min_lon <= (w.get("lon") or 0) <= max_lon and
-                                _point_in_polygon(w.get("lat", 0), w.get("lon", 0), ring))
-                        ]
-
-                        # Mark this drawing processed regardless of whether wells found
+                        # Mark this drawing processed regardless of outcome
                         st.session_state.processed_drawings.add(_geom_hash)
 
-                        if selected:
-                            # NEW VIEWPORT: replaces previous selection.
-                            # Tray is NOT modified — user adds wells one at
-                            # a time by clicking them, keeping the tray
-                            # small and intentional.
+                        # PHASE 1: Server-side bbox query.
+                        # Replaces the old in-memory filter, which doesn't
+                        # scale past ~50K wells (full set has to be in
+                        # browser/Python). Bbox query with the spatial
+                        # index returns wells inside in sub-second time
+                        # even at 4M scale.
+                        #
+                        # Returns (wells_list, total_count). If total_count
+                        # exceeds the cap, we don't render — we ask the user
+                        # to draw a smaller box. Capped to keep browser sane.
+                        # Rectangle cap: 2000 wells. Above this, browser
+                        # starts to feel sluggish on each rerun. Single
+                        # grid-cell drill stays at 1000 — rectangles can be
+                        # bigger since the user is actively choosing the
+                        # area.
+                        BBOX_LIMIT = 2000
+                        with st.spinner("Querying wells in selected area…"):
+                            try:
+                                _bbox_wells, _bbox_total = _qry_wells_in_bbox(
+                                    engine,
+                                    min_lat, max_lat,
+                                    min_lon, max_lon,
+                                    limit=BBOX_LIMIT,
+                                )
+                            except Exception as _qe:
+                                st.error(f"Bbox query failed: {_qe}")
+                                _bbox_wells, _bbox_total = [], 0
+
+                        if _bbox_total == 0:
+                            st.info("No wells found in drawn area")
+                        elif _bbox_total > BBOX_LIMIT:
+                            # Too many wells — render nothing, ask the user
+                            # to refine. Keeps the browser from drowning in
+                            # markers.
+                            st.warning(
+                                f"⚠️ **{_bbox_total:,} wells** in selected area — "
+                                f"too many to render individually "
+                                f"(cap: {BBOX_LIMIT:,}). "
+                                f"**Draw a smaller box** or zoom in further."
+                            )
+                            # Don't clear viewport_uwis — the previous
+                            # selection (if any) stays useful
+                        else:
+                            # Renderable count — extract UWIs and stash the
+                            # well data. The viewport markers render in BOTH
+                            # grid and wells modes now, so we don't force a
+                            # mode switch. User stays in whatever mode they
+                            # were in (typically grid).
+                            selected = [w["uwi"] for w in _bbox_wells]
                             st.session_state.viewport_uwis = selected
+
+                            # Tray-shadow cache: stash full data for every
+                            # well loaded into a viewport, so scout tickets
+                            # work for tray entries even after the user pans
+                            # away and the bbox cache expires.
+                            shadow = st.session_state.get("tray_well_data", {})
+                            for w in _bbox_wells:
+                                shadow[w["uwi"]] = w
+                            st.session_state["tray_well_data"] = shadow
+
                             st.success(
-                                f"📐 Viewport: {len(selected):,} wells loaded as "
-                                f"individual markers. Click wells to add to tray."
+                                f"📐 Viewport: **{len(selected):,}** wells loaded "
+                                f"as individual markers. Click wells to add to tray."
                             )
                             st.rerun()
-                        else:
-                            st.info("No wells found in drawn area")
                 except Exception as _e:
                     st.warning(f"Spatial select failed: {_e}")
 
-        # ── Parse clicked popup — UWI extracted from the popup text ────
+        # ── Parse clicked popup — grid cell OR well UWI ─────────────────
         clicked = map_data.get("last_object_clicked_popup") if map_data else None
         if clicked:
-            _uwi = None
             _clicked_str = str(clicked)
-            # Primary: data-uwi attribute (works on older streamlit-folium
-            # that returns full popup HTML)
-            m2 = re.search(r'data-uwi="([^"]+)"', _clicked_str)
-            if m2:
-                _uwi = m2.group(1).strip()
-            else:
-                # Fallbacks: try several patterns for different popup formats
-                # (older HTML-preserving vs newer text-only streamlit-folium)
-                for pat in [
-                    # HTML-preserving: monospace span around UWI
-                    r"font-family:monospace[^>]*>([^<]+)<",
-                    # 14-digit UWI surrounded by whitespace (KS, TX RRC).
-                    # The popup title and UWI may be on the same line in
-                    # streamlit-folium's plain-text return, so we can't
-                    # require start/end of line.
-                    r"(?<!\d)(\d{14})(?!\d)",
-                    # 12-16 digit UWI, more permissive — only used if 14
-                    # didn't match (rare format variations).
-                    r"(?<!\d)(\d{12,16})(?!\d)",
-                    # Dashed UWI format (e.g., "15-009-00865-0000")
-                    r"(\d{2}-\d{3}-\d{5}-\d{2,4}(?:-\d{2})?)",
-                    # PPDM US-prefix format
-                    r"(US[0-9]{14})",
-                ]:
-                    m2 = re.search(pat, _clicked_str)
-                    if m2:
-                        _uwi = m2.group(1).strip()
-                        break
 
-            if _uwi:
-                # Add to tray if not already there
-                if _uwi not in st.session_state.clicked_uwis:
-                    st.session_state.clicked_uwis.append(_uwi)
-                # Open scout ticket for this well — auto-render below map
-                st.session_state.scout_uwi = _uwi
-                st.session_state["show_summary"] = True
-                st.session_state["_summary_uwis"] = [_uwi]
+            # First check: is this a GRID_CELL click? Drill into that cell.
+            # Format: GRID_CELL|min_lat|min_lon|step|count
+            _grid_match = re.search(
+                r"GRID_CELL\|(-?\d+\.\d+)\|(-?\d+\.\d+)\|(\d+\.\d+)\|(\d+)",
+                _clicked_str,
+            )
+            if _grid_match:
+                _gc_lat = float(_grid_match.group(1))
+                _gc_lon = float(_grid_match.group(2))
+                _gc_step = float(_grid_match.group(3))
+                _gc_count = int(_grid_match.group(4))
+
+                # Dedupe: streamlit-folium keeps returning the same click
+                # data across reruns until something else is clicked. Without
+                # this check we'd re-fire the bbox query every rerun.
+                _gc_sig = f"{_gc_lat:.4f}|{_gc_lon:.4f}"
+                if st.session_state.get("_last_grid_click") != _gc_sig:
+                    st.session_state["_last_grid_click"] = _gc_sig
+
+                    if _gc_count > 1000:
+                        st.warning(
+                            f"⚠️ Cell has **{_gc_count:,} wells** — too many to "
+                            f"render individually (cap: 1000). Use the rectangle "
+                            f"tool to draw a smaller box inside the cell."
+                        )
+                    else:
+                        with st.spinner(f"Loading {_gc_count:,} wells from cell…"):
+                            try:
+                                _cell_wells, _cell_total = _qry_wells_in_bbox(
+                                    engine,
+                                    _gc_lat, _gc_lat + _gc_step,
+                                    _gc_lon, _gc_lon + _gc_step,
+                                    limit=2000,
+                                )
+                            except Exception as _qe:
+                                st.error(f"Cell query failed: {_qe}")
+                                _cell_wells, _cell_total = [], 0
+
+                        if _cell_wells:
+                            st.session_state.viewport_uwis = [
+                                w["uwi"] for w in _cell_wells
+                            ]
+                            # Cache full well data for scout-ticket lookups
+                            shadow = st.session_state.get("tray_well_data", {})
+                            for w in _cell_wells:
+                                shadow[w["uwi"]] = w
+                            st.session_state["tray_well_data"] = shadow
+                            # Set drawn bounds so the map zooms to the cell
+                            st.session_state["_drawn_bounds"] = [
+                                [_gc_lat, _gc_lon],
+                                [_gc_lat + _gc_step, _gc_lon + _gc_step],
+                            ]
+                            # STAY in grid mode — drilled wells render as
+                            # yellow markers on top of the grid layer.
+                            # User keeps the density overview everywhere else.
+                            st.success(
+                                f"📐 Loaded {len(_cell_wells):,} wells from "
+                                f"selected cell."
+                            )
+                            st.rerun()
+                        else:
+                            st.info("No wells found in cell")
+
+            # Otherwise: well UWI extraction (existing behavior)
+            else:
+                _uwi = None
+                # Primary: data-uwi attribute (works on older streamlit-folium
+                # that returns full popup HTML)
+                m2 = re.search(r'data-uwi="([^"]+)"', _clicked_str)
+                if m2:
+                    _uwi = m2.group(1).strip()
+                else:
+                    # Fallbacks: try several patterns for different popup formats
+                    # (older HTML-preserving vs newer text-only streamlit-folium)
+                    for pat in [
+                        # HTML-preserving: monospace span around UWI
+                        r"font-family:monospace[^>]*>([^<]+)<",
+                        # 14-digit UWI surrounded by whitespace (KS, TX RRC).
+                        # The popup title and UWI may be on the same line in
+                        # streamlit-folium's plain-text return, so we can't
+                        # require start/end of line.
+                        r"(?<!\d)(\d{14})(?!\d)",
+                        # 12-16 digit UWI, more permissive — only used if 14
+                        # didn't match (rare format variations).
+                        r"(?<!\d)(\d{12,16})(?!\d)",
+                        # Dashed UWI format (e.g., "15-009-00865-0000")
+                        r"(\d{2}-\d{3}-\d{5}-\d{2,4}(?:-\d{2})?)",
+                        # PPDM US-prefix format
+                        r"(US[0-9]{14})",
+                    ]:
+                        m2 = re.search(pat, _clicked_str)
+                        if m2:
+                            _uwi = m2.group(1).strip()
+                            break
+
+                if _uwi:
+                    # Click adds to tray only. Scout ticket is NOT auto-shown —
+                    # the user opens it explicitly from the tray UI when they
+                    # want it. This avoids spamming the user with a full ticket
+                    # render every time they tap a well to bookmark it.
+                    if _uwi not in st.session_state.clicked_uwis:
+                        st.session_state.clicked_uwis.append(_uwi)
 
         # ── clicked well → add to tray only, no ticket panel ────────────
         scout_uwi = st.session_state.scout_uwi
@@ -2248,6 +2724,11 @@ def run(engine=None):
                         # Also clear viewport markers and the drawing dedupe set
                         st.session_state["viewport_uwis"] = []
                         st.session_state["processed_drawings"] = set()
+                        # Clear grid-click dedupe so the same cell can be
+                        # re-clicked, and the drawn bounds so the map
+                        # repositions correctly next time
+                        st.session_state.pop("_last_grid_click", None)
+                        st.session_state.pop("_drawn_bounds", None)
                         st.rerun()
 
 
