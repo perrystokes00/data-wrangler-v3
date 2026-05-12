@@ -123,6 +123,19 @@ def _tab_scan(engine, dialect):
     if c3.button("⏹ Stop", key="wb_stop", use_container_width=True):
         st.session_state["wb_enriching"] = False
 
+    # Phase 2 thread count — tune parallelism. Default 8 works for mixed
+    # extraction (PDF/DLIS/Office). Drop to 2-4 for DLIS-heavy batches
+    # that load big chunks into memory; raise to 16 for many small files.
+    _w = st.slider(
+        "Phase 2 threads",
+        min_value=1, max_value=16,
+        value=int(st.session_state.get("wb_phase2_workers", 8)),
+        key="wb_phase2_workers_slider",
+        help="Files per chunk extracted in parallel. Lower for "
+             "DLIS-heavy batches; higher for many small files. Default 8.",
+    )
+    st.session_state["wb_phase2_workers"] = _w
+
     # ── Catalog summary ───────────────────────────────────────────────────────
     st.divider()
     try:
@@ -386,8 +399,23 @@ def _enrich_chunk(engine, dialect):
     Phase 2: process ENRICH_CHUNK files per rerun.
     Extracts headers → FILE_WELL_HEADER / FILE_SEIS_HEADER.
     Shows a persistent progress bar at the top of the page.
+
+    Extraction within each chunk runs in parallel across PHASE2_WORKERS
+    threads. DB writes stay sequential in the main thread — single-row
+    UPDATEs are microseconds each, so the bottleneck is file parsing
+    (PDFs/DLIS can take seconds), which is what we parallelize.
+
+    The chunked-rerun pattern is preserved: each chunk finishes, Streamlit
+    reruns, the next chunk starts. The user can still hit Stop between
+    chunks to pause without losing progress.
     """
     from sqlalchemy import text as _t
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Phase 2 worker count from session state. Default 8 — balanced for
+    # mixed extraction (PDF/DLIS/Office). User can tune via the slider in
+    # the Scan tab.
+    PHASE2_WORKERS = int(st.session_state.get("wb_phase2_workers", 8))
 
     try:
         with engine.connect() as con:
@@ -419,25 +447,224 @@ def _enrich_chunk(engine, dialect):
         st.session_state["wb_enrich_total"] = total_all
         return
 
+    # ── Parallel extraction within this chunk ────────────────────────────
+    # Each worker handles one file: read it, extract fields, return result.
+    # Workers don't touch the DB — writes happen in the main thread below.
+    # Each result carries its own elapsed time so we can spot slow formats
+    # and compare sum-of-times (would-be sequential) vs wall-clock (parallel).
+    import time as _time
+    _t_chunk_start = _time.monotonic()
+
+    def _worker(row):
+        inv_id, fpath, fext = row
+        _t0 = _time.monotonic()
+        try:
+            fields = _extract_fields(fpath, (fext or "").lower())
+            return ("ok", inv_id, fpath, fext, fields, None,
+                    _time.monotonic() - _t0)
+        except Exception as e:
+            return ("err", inv_id, fpath, fext, None,
+                    f"{type(e).__name__}: {e}",
+                    _time.monotonic() - _t0)
+
+    results = []
+    _t_pool_start = _time.monotonic()
+    with ThreadPoolExecutor(max_workers=PHASE2_WORKERS) as pool:
+        futures = [pool.submit(_worker, row) for row in rows]
+        for fut in as_completed(futures):
+            try:
+                # Per-file timeout: 5 min ceiling. Hung extractor doesn't
+                # block the chunk.
+                results.append(fut.result(timeout=300))
+            except Exception as e:
+                results.append(("err", None, "", "", None,
+                                f"worker died: {e}", 0.0))
+    _t_pool_end = _time.monotonic()
+    _pool_elapsed = _t_pool_end - _t_pool_start
+
+    # ── Batched DB writes via executemany (one round-trip per statement) ─
+    # Previous attempt at "batched" was just one transaction wrapping per-
+    # row execute() calls. Diagnostic showed that didn't help — cost is
+    # per-statement, not per-transaction. ODBC was still doing N round-
+    # trips, just with one commit at the end.
+    #
+    # Real fix: build parameter LISTS, call executemany() once per
+    # statement-shape. pyodbc has fast_executemany=True enabled in our
+    # engine config (db.py line 159), which makes executemany pack many
+    # parameter sets into a single network round-trip.
+    #
+    # Expected: 3 round-trips per chunk (one for GLOBAL_FILE_CATALOG,
+    # one for FILE_WELL_HEADER MERGE, one for FILE_SEIS_HEADER MERGE)
+    # instead of N. For chunks with mixed file types, the WELL/SEIS
+    # MERGEs only run if there's data of that category.
+    _t_writes_start = _time.monotonic()
+
+    # Build parameter lists by statement shape
+    update_params: list = []     # for GLOBAL_FILE_CATALOG (success path)
+    error_params:  list = []     # for GLOBAL_FILE_CATALOG (error path - 'E')
+    well_params:   list = []     # for FILE_WELL_HEADER MERGE
+    seis_params:   list = []     # for FILE_SEIS_HEADER MERGE
     done = 0
     last = ""
-    for inv_id, fpath, fext in rows:
-        last = Path(fpath).name
-        try:
-            fields = _extract_fields(fpath, fext.lower())
-            _write_enrichment(engine, inv_id, fields)
+    per_ext_times: dict = {}
+
+    for outcome, inv_id, fpath, fext, fields, err, elapsed in results:
+        if fpath:
+            last = Path(fpath).name
+        ext_key = (fext or "?").lower()
+        per_ext_times.setdefault(ext_key, []).append(elapsed)
+
+        if outcome == "ok" and inv_id is not None:
+            # Success: queue the GLOBAL_FILE_CATALOG UPDATE and the
+            # matching MERGE for whichever header table this category lives in.
+            score, readiness = _score(fields)
+            update_params.append({
+                "score":     score,
+                "readiness": readiness,
+                "uwi":       _trunc(fields.get("uwi"), 40),
+                "issues":    "; ".join(_issues(fields)),
+                "id":        inv_id,
+            })
+            category = fields.get("file_category", "UNKNOWN")
+            if category == "WELL":
+                well_params.append({
+                    "hid":     uuid.uuid5(uuid.NAMESPACE_URL, inv_id).hex.upper(),
+                    "inv_id":  inv_id,
+                    "uwi":     _trunc(fields.get("uwi"),40),
+                    "wn":      _trunc(fields.get("well_name"),255),
+                    "op":      _trunc(fields.get("operator"),255),
+                    "fld":     _trunc(fields.get("well_field"),100),
+                    "st":      _trunc(fields.get("state"),50),
+                    "co":      _trunc(fields.get("county"),100),
+                    "lat":     _trunc(fields.get("latitude"),30),
+                    "lon":     _trunc(fields.get("longitude"),30),
+                    "td":      _trunc(fields.get("total_depth"),20),
+                    "spud":    _trunc(fields.get("spud_date"),20),
+                    "rig":     _trunc(fields.get("rig_release"),20),
+                    "rt":      _trunc(fields.get("report_type"),50),
+                    "stype":   _trunc(fields.get("survey_type"),50),
+                    "contr":   _trunc(fields.get("contractor"),255),
+                    "conf":    _safe_num(fields.get("confidence")),
+                })
+            elif category == "SEIS":
+                seis_params.append({
+                    "hid":      uuid.uuid5(uuid.NAMESPACE_URL, inv_id+"_s").hex.upper(),
+                    "inv_id":   inv_id,
+                    "sn":       _trunc(fields.get("survey_name"),255),
+                    "ln":       _trunc(fields.get("line_name"),255),
+                    "stype":    _trunc(fields.get("seis_set_type"),40),
+                    "sd":       _trunc(fields.get("survey_date"),20),
+                    "contr":    _trunc(fields.get("contractor"),255),
+                    "bmin_lat": _safe_coord(fields.get("bbox_min_lat")),
+                    "bmax_lat": _safe_coord(fields.get("bbox_max_lat")),
+                    "bmin_lon": _safe_coord(fields.get("bbox_min_lon")),
+                    "bmax_lon": _safe_coord(fields.get("bbox_max_lon")),
+                    "epsg":     _safe_epsg(fields.get("epsg_code")),
+                    "si":       _safe_sample_interval(fields.get("sample_interval")),
+                    "tc":       _safe_trace_count(fields.get("trace_count")),
+                    "sf":       _trunc(fields.get("shot_first"),20),
+                    "sl":       _trunc(fields.get("shot_last"),20),
+                })
             done += 1
-        except Exception:
-            try:
-                with engine.begin() as con:
-                    con.execute(_t("""
-                        UPDATE file_catalog.GLOBAL_FILE_CATALOG
-                        SET HEADER_EXTRACTED='E',
-                            ROW_CHANGED_DATE=GETUTCDATE()
-                        WHERE INVENTORY_ID=:id
-                    """), {"id": inv_id})
-            except Exception:
-                pass
+        elif inv_id is not None:
+            # Extraction errored — queue the error-marker UPDATE
+            error_params.append({"id": inv_id})
+
+    # Execute the batched writes. Each executemany() is a single round-trip
+    # with fast_executemany=True. We isolate each statement-shape in its
+    # own try/except so a failure in one (e.g. a triggered constraint
+    # violation in FILE_WELL_HEADER) doesn't poison the others.
+    try:
+        with engine.begin() as con:
+            if update_params:
+                con.execute(_t("""
+                    UPDATE file_catalog.GLOBAL_FILE_CATALOG SET
+                        CATALOG_SCORE     = :score,
+                        CATALOG_READINESS = :readiness,
+                        MATCHED_UWI       = :uwi,
+                        CATALOG_ISSUES    = :issues,
+                        HEADER_EXTRACTED  = 'Y',
+                        ROW_CHANGED_DATE  = GETUTCDATE()
+                    WHERE INVENTORY_ID = :id
+                """), update_params)
+            if well_params:
+                con.execute(_t("""
+                    MERGE file_catalog.FILE_WELL_HEADER AS tgt
+                    USING (SELECT :hid AS WELL_HEADER_ID) src
+                    ON tgt.WELL_HEADER_ID = src.WELL_HEADER_ID
+                    WHEN MATCHED THEN UPDATE SET
+                        UWI=:uwi, WELL_NAME=:wn, OPERATOR=:op,
+                        WELL_FIELD=:fld, STATE=:st, COUNTY=:co,
+                        LATITUDE=:lat, LONGITUDE=:lon,
+                        TOTAL_DEPTH=:td, SPUD_DATE=:spud,
+                        RIG_RELEASE=:rig, REPORT_TYPE=:rt,
+                        SURVEY_TYPE=:stype, CONTRACTOR=:contr,
+                        CONFIDENCE=:conf, EXTRACTED_DATE=GETUTCDATE()
+                    WHEN NOT MATCHED THEN INSERT (
+                        WELL_HEADER_ID,INVENTORY_ID,
+                        UWI,WELL_NAME,OPERATOR,WELL_FIELD,
+                        STATE,COUNTY,LATITUDE,LONGITUDE,
+                        TOTAL_DEPTH,SPUD_DATE,RIG_RELEASE,
+                        REPORT_TYPE,SURVEY_TYPE,CONTRACTOR,CONFIDENCE,
+                        EXTRACTED_DATE,EXTRACTED_BY
+                    ) VALUES (
+                        :hid,:inv_id,
+                        :uwi,:wn,:op,:fld,
+                        :st,:co,:lat,:lon,
+                        :td,:spud,:rig,
+                        :rt,:stype,:contr,:conf,
+                        GETUTCDATE(),'DataWrangler'
+                    );
+                """), well_params)
+            if seis_params:
+                con.execute(_t("""
+                    MERGE file_catalog.FILE_SEIS_HEADER AS tgt
+                    USING (SELECT :hid AS SEIS_HEADER_ID) src
+                    ON tgt.SEIS_HEADER_ID = src.SEIS_HEADER_ID
+                    WHEN MATCHED THEN UPDATE SET
+                        SURVEY_NAME=:sn, LINE_NAME=:ln,
+                        SEIS_SET_TYPE=:stype, SURVEY_DATE=:sd,
+                        CONTRACTOR=:contr,
+                        BBOX_MIN_LAT=:bmin_lat, BBOX_MAX_LAT=:bmax_lat,
+                        BBOX_MIN_LON=:bmin_lon, BBOX_MAX_LON=:bmax_lon,
+                        EPSG_CODE=:epsg, SAMPLE_INTERVAL=:si,
+                        TRACE_COUNT=:tc, SHOT_FIRST=:sf, SHOT_LAST=:sl,
+                        EXTRACTED_DATE=GETUTCDATE()
+                    WHEN NOT MATCHED THEN INSERT (
+                        SEIS_HEADER_ID,INVENTORY_ID,
+                        SURVEY_NAME,LINE_NAME,SEIS_SET_TYPE,SURVEY_DATE,
+                        CONTRACTOR,BBOX_MIN_LAT,BBOX_MAX_LAT,
+                        BBOX_MIN_LON,BBOX_MAX_LON,EPSG_CODE,
+                        SAMPLE_INTERVAL,TRACE_COUNT,SHOT_FIRST,SHOT_LAST,
+                        EXTRACTED_DATE,EXTRACTED_BY
+                    ) VALUES (
+                        :hid,:inv_id,
+                        :sn,:ln,:stype,:sd,
+                        :contr,:bmin_lat,:bmax_lat,
+                        :bmin_lon,:bmax_lon,:epsg,
+                        :si,:tc,:sf,:sl,
+                        GETUTCDATE(),'DataWrangler'
+                    );
+                """), seis_params)
+            if error_params:
+                con.execute(_t("""
+                    UPDATE file_catalog.GLOBAL_FILE_CATALOG
+                    SET HEADER_EXTRACTED='E',
+                        ROW_CHANGED_DATE=GETUTCDATE()
+                    WHERE INVENTORY_ID=:id
+                """), error_params)
+    except Exception as e:
+        st.error(f"Chunk transaction failed (rolled back): {e}")
+        st.session_state["wb_enriching"] = False
+        return
+    _t_writes_end = _time.monotonic()
+    _writes_elapsed = _t_writes_end - _t_writes_start
+
+    # Sum of per-file extraction times. If sum_per_file >> pool_elapsed,
+    # parallelism IS helping (threads overlapping). If sum ≈ pool, the
+    # GIL or some serializing call is preventing real parallelism.
+    _sum_per_file = sum(e for grp in per_ext_times.values() for e in grp)
+    _speedup_ratio = (_sum_per_file / _pool_elapsed) if _pool_elapsed > 0 else 0.0
 
     total_done = total_all - pending + done
     pct = min(1.0, total_done / max(total_all, 1))
@@ -448,7 +675,26 @@ def _enrich_chunk(engine, dialect):
     ))
     st.caption(
         f"{pending - done:,} remaining · "
+        f"{PHASE2_WORKERS} threads · "
         "click **⏹ Stop** to pause"
+    )
+
+    # ── Diagnostic: where did time go this chunk? ────────────────────────
+    # Sum of per-file extraction times vs wall-clock pool time tells us
+    # whether parallelism is actually working. A speedup ratio close to
+    # PHASE2_WORKERS means good parallelism. A ratio close to 1.0 means
+    # threads are serializing (probably GIL on pure-Python extractors).
+    _per_ext_summary = " · ".join(
+        f"{ext}:{sum(times):.2f}s({len(times)})"
+        for ext, times in sorted(per_ext_times.items(),
+                                 key=lambda kv: -sum(kv[1]))
+    )
+    st.caption(
+        f"⏱ chunk={_pool_elapsed + _writes_elapsed:.2f}s "
+        f"(extract:{_pool_elapsed:.2f}s, writes:{_writes_elapsed:.2f}s) · "
+        f"sum-of-files={_sum_per_file:.2f}s · "
+        f"speedup={_speedup_ratio:.1f}× (ideal: {PHASE2_WORKERS}×) · "
+        f"by-ext: {_per_ext_summary}"
     )
 
     if len(rows) == ENRICH_CHUNK and pending > done:
@@ -705,128 +951,149 @@ def _extract_fields(fpath: str, fext: str) -> dict:
 
 
 def _write_enrichment(engine, inv_id: str, fields: dict):
-    """Write extracted header fields to catalog tables."""
+    """Write extracted header fields to catalog tables.
+
+    Single-file write — opens its own transaction. Kept for the few
+    callers outside the Phase 2 chunk loop. The chunk loop uses
+    _write_enrichment_on() with a shared connection for batched-commit
+    performance.
+    """
+    with engine.begin() as con:
+        _write_enrichment_on(con, inv_id, fields)
+
+
+def _write_enrichment_on(con, inv_id: str, fields: dict):
+    """Write extracted header fields using a CALLER-PROVIDED connection.
+
+    Used by the Phase 2 chunk loop, which wraps every UPDATE+MERGE in
+    a single chunk-level transaction. Eliminates per-file transaction
+    round-trip cost (~150ms each on SQL Server Express via named pipe),
+    which the diagnostic captions revealed was 90% of chunk time.
+
+    The connection is expected to be inside an active engine.begin()
+    block — this function does NOT commit. All writes commit when the
+    outer transaction commits.
+    """
     from sqlalchemy import text as _t
 
     score, readiness = _score(fields)
-    category = fields.get("file_category","UNKNOWN")
+    category = fields.get("file_category", "UNKNOWN")
 
-    with engine.begin() as con:
-        # Always update GLOBAL_FILE_CATALOG
+    # Always update GLOBAL_FILE_CATALOG
+    con.execute(_t("""
+        UPDATE file_catalog.GLOBAL_FILE_CATALOG SET
+            CATALOG_SCORE     = :score,
+            CATALOG_READINESS = :readiness,
+            MATCHED_UWI       = :uwi,
+            CATALOG_ISSUES    = :issues,
+            HEADER_EXTRACTED  = 'Y',
+            ROW_CHANGED_DATE  = GETUTCDATE()
+        WHERE INVENTORY_ID = :id
+    """), {
+        "score":     score,
+        "readiness": readiness,
+        "uwi":       _trunc(fields.get("uwi"), 40),
+        "issues":    "; ".join(_issues(fields)),
+        "id":        inv_id,
+    })
+
+    if category == "WELL":
+        hid = uuid.uuid5(
+            uuid.NAMESPACE_URL, inv_id).hex.upper()
         con.execute(_t("""
-            UPDATE file_catalog.GLOBAL_FILE_CATALOG SET
-                CATALOG_SCORE     = :score,
-                CATALOG_READINESS = :readiness,
-                MATCHED_UWI       = :uwi,
-                CATALOG_ISSUES    = :issues,
-                HEADER_EXTRACTED  = 'Y',
-                ROW_CHANGED_DATE  = GETUTCDATE()
-            WHERE INVENTORY_ID = :id
+            MERGE file_catalog.FILE_WELL_HEADER AS tgt
+            USING (SELECT :hid AS WELL_HEADER_ID) src
+            ON tgt.WELL_HEADER_ID = src.WELL_HEADER_ID
+            WHEN MATCHED THEN UPDATE SET
+                UWI=:uwi, WELL_NAME=:wn, OPERATOR=:op,
+                WELL_FIELD=:fld, STATE=:st, COUNTY=:co,
+                LATITUDE=:lat, LONGITUDE=:lon,
+                TOTAL_DEPTH=:td, SPUD_DATE=:spud,
+                RIG_RELEASE=:rig, REPORT_TYPE=:rt,
+                SURVEY_TYPE=:stype, CONTRACTOR=:contr,
+                CONFIDENCE=:conf, EXTRACTED_DATE=GETUTCDATE()
+            WHEN NOT MATCHED THEN INSERT (
+                WELL_HEADER_ID,INVENTORY_ID,
+                UWI,WELL_NAME,OPERATOR,WELL_FIELD,
+                STATE,COUNTY,LATITUDE,LONGITUDE,
+                TOTAL_DEPTH,SPUD_DATE,RIG_RELEASE,
+                REPORT_TYPE,SURVEY_TYPE,CONTRACTOR,CONFIDENCE,
+                EXTRACTED_DATE,EXTRACTED_BY
+            ) VALUES (
+                :hid,:inv_id,
+                :uwi,:wn,:op,:fld,
+                :st,:co,:lat,:lon,
+                :td,:spud,:rig,
+                :rt,:stype,:contr,:conf,
+                GETUTCDATE(),'DataWrangler'
+            );
         """), {
-            "score":     score,
-            "readiness": readiness,
-            "uwi":       _trunc(fields.get("uwi"), 40),
-            "issues":    "; ".join(_issues(fields)),
-            "id":        inv_id,
+            "hid":     hid,    "inv_id": inv_id,
+            "uwi":     _trunc(fields.get("uwi"),40),
+            "wn":      _trunc(fields.get("well_name"),255),
+            "op":      _trunc(fields.get("operator"),255),
+            "fld":     _trunc(fields.get("well_field"),100),
+            "st":      _trunc(fields.get("state"),50),
+            "co":      _trunc(fields.get("county"),100),
+            "lat":     _trunc(fields.get("latitude"),30),
+            "lon":     _trunc(fields.get("longitude"),30),
+            "td":      _trunc(fields.get("total_depth"),20),
+            "spud":    _trunc(fields.get("spud_date"),20),
+            "rig":     _trunc(fields.get("rig_release"),20),
+            "rt":      _trunc(fields.get("report_type"),50),
+            "stype":   _trunc(fields.get("survey_type"),50),
+            "contr":   _trunc(fields.get("contractor"),255),
+            "conf":    _safe_num(fields.get("confidence")),
         })
 
-        if category == "WELL":
-            hid = uuid.uuid5(
-                uuid.NAMESPACE_URL, inv_id).hex.upper()
-            con.execute(_t("""
-                MERGE file_catalog.FILE_WELL_HEADER AS tgt
-                USING (SELECT :hid AS WELL_HEADER_ID) src
-                ON tgt.WELL_HEADER_ID = src.WELL_HEADER_ID
-                WHEN MATCHED THEN UPDATE SET
-                    UWI=:uwi, WELL_NAME=:wn, OPERATOR=:op,
-                    WELL_FIELD=:fld, STATE=:st, COUNTY=:co,
-                    LATITUDE=:lat, LONGITUDE=:lon,
-                    TOTAL_DEPTH=:td, SPUD_DATE=:spud,
-                    RIG_RELEASE=:rig, REPORT_TYPE=:rt,
-                    SURVEY_TYPE=:stype, CONTRACTOR=:contr,
-                    CONFIDENCE=:conf, EXTRACTED_DATE=GETUTCDATE()
-                WHEN NOT MATCHED THEN INSERT (
-                    WELL_HEADER_ID,INVENTORY_ID,
-                    UWI,WELL_NAME,OPERATOR,WELL_FIELD,
-                    STATE,COUNTY,LATITUDE,LONGITUDE,
-                    TOTAL_DEPTH,SPUD_DATE,RIG_RELEASE,
-                    REPORT_TYPE,SURVEY_TYPE,CONTRACTOR,CONFIDENCE,
-                    EXTRACTED_DATE,EXTRACTED_BY
-                ) VALUES (
-                    :hid,:inv_id,
-                    :uwi,:wn,:op,:fld,
-                    :st,:co,:lat,:lon,
-                    :td,:spud,:rig,
-                    :rt,:stype,:contr,:conf,
-                    GETUTCDATE(),'DataWrangler'
-                );
-            """), {
-                "hid":     hid,    "inv_id": inv_id,
-                "uwi":     _trunc(fields.get("uwi"),40),
-                "wn":      _trunc(fields.get("well_name"),255),
-                "op":      _trunc(fields.get("operator"),255),
-                "fld":     _trunc(fields.get("well_field"),100),
-                "st":      _trunc(fields.get("state"),50),
-                "co":      _trunc(fields.get("county"),100),
-                "lat":     _trunc(fields.get("latitude"),30),
-                "lon":     _trunc(fields.get("longitude"),30),
-                "td":      _trunc(fields.get("total_depth"),20),
-                "spud":    _trunc(fields.get("spud_date"),20),
-                "rig":     _trunc(fields.get("rig_release"),20),
-                "rt":      _trunc(fields.get("report_type"),50),
-                "stype":   _trunc(fields.get("survey_type"),50),
-                "contr":   _trunc(fields.get("contractor"),255),
-                "conf":    _safe_num(fields.get("confidence")),
-            })
-
-        elif category == "SEIS":
-            hid = uuid.uuid5(
-                uuid.NAMESPACE_URL, inv_id+"_s").hex.upper()
-            con.execute(_t("""
-                MERGE file_catalog.FILE_SEIS_HEADER AS tgt
-                USING (SELECT :hid AS SEIS_HEADER_ID) src
-                ON tgt.SEIS_HEADER_ID = src.SEIS_HEADER_ID
-                WHEN MATCHED THEN UPDATE SET
-                    SURVEY_NAME=:sn, LINE_NAME=:ln,
-                    SEIS_SET_TYPE=:stype, SURVEY_DATE=:sd,
-                    CONTRACTOR=:contr,
-                    BBOX_MIN_LAT=:bmin_lat, BBOX_MAX_LAT=:bmax_lat,
-                    BBOX_MIN_LON=:bmin_lon, BBOX_MAX_LON=:bmax_lon,
-                    EPSG_CODE=:epsg, SAMPLE_INTERVAL=:si,
-                    TRACE_COUNT=:tc, SHOT_FIRST=:sf, SHOT_LAST=:sl,
-                    EXTRACTED_DATE=GETUTCDATE()
-                WHEN NOT MATCHED THEN INSERT (
-                    SEIS_HEADER_ID,INVENTORY_ID,
-                    SURVEY_NAME,LINE_NAME,SEIS_SET_TYPE,SURVEY_DATE,
-                    CONTRACTOR,BBOX_MIN_LAT,BBOX_MAX_LAT,
-                    BBOX_MIN_LON,BBOX_MAX_LON,EPSG_CODE,
-                    SAMPLE_INTERVAL,TRACE_COUNT,SHOT_FIRST,SHOT_LAST,
-                    EXTRACTED_DATE,EXTRACTED_BY
-                ) VALUES (
-                    :hid,:inv_id,
-                    :sn,:ln,:stype,:sd,
-                    :contr,:bmin_lat,:bmax_lat,
-                    :bmin_lon,:bmax_lon,:epsg,
-                    :si,:tc,:sf,:sl,
-                    GETUTCDATE(),'DataWrangler'
-                );
-            """), {
-                "hid":      hid,      "inv_id":   inv_id,
-                "sn":       _trunc(fields.get("survey_name"),255),
-                "ln":       _trunc(fields.get("line_name"),255),
-                "stype":    _trunc(fields.get("seis_set_type"),40),
-                "sd":       _trunc(fields.get("survey_date"),20),
-                "contr":    _trunc(fields.get("contractor"),255),
-                "bmin_lat": _safe_num(fields.get("bbox_min_lat")),
-                "bmax_lat": _safe_num(fields.get("bbox_max_lat")),
-                "bmin_lon": _safe_num(fields.get("bbox_min_lon")),
-                "bmax_lon": _safe_num(fields.get("bbox_max_lon")),
-                "epsg":     _safe_int(fields.get("epsg_code")),
-                "si":       _safe_num(fields.get("sample_interval")),
-                "tc":       _safe_int(fields.get("trace_count")),
-                "sf":       _trunc(fields.get("shot_first"),20),
-                "sl":       _trunc(fields.get("shot_last"),20),
-            })
+    elif category == "SEIS":
+        hid = uuid.uuid5(
+            uuid.NAMESPACE_URL, inv_id+"_s").hex.upper()
+        con.execute(_t("""
+            MERGE file_catalog.FILE_SEIS_HEADER AS tgt
+            USING (SELECT :hid AS SEIS_HEADER_ID) src
+            ON tgt.SEIS_HEADER_ID = src.SEIS_HEADER_ID
+            WHEN MATCHED THEN UPDATE SET
+                SURVEY_NAME=:sn, LINE_NAME=:ln,
+                SEIS_SET_TYPE=:stype, SURVEY_DATE=:sd,
+                CONTRACTOR=:contr,
+                BBOX_MIN_LAT=:bmin_lat, BBOX_MAX_LAT=:bmax_lat,
+                BBOX_MIN_LON=:bmin_lon, BBOX_MAX_LON=:bmax_lon,
+                EPSG_CODE=:epsg, SAMPLE_INTERVAL=:si,
+                TRACE_COUNT=:tc, SHOT_FIRST=:sf, SHOT_LAST=:sl,
+                EXTRACTED_DATE=GETUTCDATE()
+            WHEN NOT MATCHED THEN INSERT (
+                SEIS_HEADER_ID,INVENTORY_ID,
+                SURVEY_NAME,LINE_NAME,SEIS_SET_TYPE,SURVEY_DATE,
+                CONTRACTOR,BBOX_MIN_LAT,BBOX_MAX_LAT,
+                BBOX_MIN_LON,BBOX_MAX_LON,EPSG_CODE,
+                SAMPLE_INTERVAL,TRACE_COUNT,SHOT_FIRST,SHOT_LAST,
+                EXTRACTED_DATE,EXTRACTED_BY
+            ) VALUES (
+                :hid,:inv_id,
+                :sn,:ln,:stype,:sd,
+                :contr,:bmin_lat,:bmax_lat,
+                :bmin_lon,:bmax_lon,:epsg,
+                :si,:tc,:sf,:sl,
+                GETUTCDATE(),'DataWrangler'
+            );
+        """), {
+            "hid":      hid,      "inv_id":   inv_id,
+            "sn":       _trunc(fields.get("survey_name"),255),
+            "ln":       _trunc(fields.get("line_name"),255),
+            "stype":    _trunc(fields.get("seis_set_type"),40),
+            "sd":       _trunc(fields.get("survey_date"),20),
+            "contr":    _trunc(fields.get("contractor"),255),
+            "bmin_lat": _safe_coord(fields.get("bbox_min_lat")),
+            "bmax_lat": _safe_coord(fields.get("bbox_max_lat")),
+            "bmin_lon": _safe_coord(fields.get("bbox_min_lon")),
+            "bmax_lon": _safe_coord(fields.get("bbox_max_lon")),
+            "epsg":     _safe_epsg(fields.get("epsg_code")),
+            "si":       _safe_sample_interval(fields.get("sample_interval")),
+            "tc":       _safe_trace_count(fields.get("trace_count")),
+            "sf":       _trunc(fields.get("shot_first"),20),
+            "sl":       _trunc(fields.get("shot_last"),20),
+        })
 
 
 def _score(fields: dict) -> tuple:
@@ -855,16 +1122,55 @@ def _trunc(v, n):
     return str(v)[:n] if v is not None else None
 
 def _safe_num(v):
+    """Convert to float or None. Silently swallows bad input."""
     try:
         return float(str(v).replace(",","").strip()) if v is not None else None
     except (ValueError, TypeError):
         return None
 
 def _safe_int(v):
+    """Convert to int or None. Silently swallows bad input."""
     try:
         return int(float(str(v).strip())) if v is not None else None
     except (ValueError, TypeError):
         return None
+
+
+# ── Bounded variants ────────────────────────────────────────────────────
+# pyodbc's fast_executemany pre-checks numeric ranges and rejects the
+# whole batch if any value overflows the target column's precision/scale.
+# These helpers clamp values to known-safe ranges, dropping outliers to
+# NULL rather than letting them poison the batch.
+
+def _safe_coord(v):
+    """Latitude or longitude. Returns float in [-180, 180] or None."""
+    n = _safe_num(v)
+    if n is None or not (-180.0 <= n <= 180.0):
+        return None
+    return n
+
+def _safe_sample_interval(v):
+    """Seismic sample interval (microseconds). Positive, sane upper bound."""
+    n = _safe_num(v)
+    # SEGY interval is in microseconds; legitimate values are 250-16000.
+    # Anything outside [0, 1_000_000] is garbage from a bad header read.
+    if n is None or n < 0 or n > 1_000_000:
+        return None
+    return n
+
+def _safe_trace_count(v):
+    """Seismic trace count. Positive int, sane upper bound."""
+    n = _safe_int(v)
+    if n is None or n < 0 or n > 100_000_000:
+        return None
+    return n
+
+def _safe_epsg(v):
+    """EPSG code. 4 to 6 digit positive int."""
+    n = _safe_int(v)
+    if n is None or n < 1000 or n > 999_999:
+        return None
+    return n
 
 
 # =============================================================================

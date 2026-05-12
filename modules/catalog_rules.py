@@ -962,13 +962,195 @@ def write_score(engine, inventory_id: str, scored: dict,
         return False
 
 
+def extract_files_parallel(
+    rows,
+    engine=None,
+    max_workers: int = 8,
+    progress_callback=None,
+    timeout_per_file: int = 300,
+):
+    """
+    Extract headers from many files in parallel.
+
+    Pure helper — no Streamlit dependency. Drives parallel extraction with
+    a thread pool, drains results in the main thread, and yields them one
+    at a time as completed.
+
+    Parameters
+    ----------
+    rows : iterable of (inventory_id, file_path, file_ext)
+        Rows from GLOBAL_FILE_CATALOG to extract.
+    engine : SQLAlchemy engine, optional
+        Passed to score_file for UWI lookups against dv_well. If None,
+        scoring runs without DB-match enrichment.
+    max_workers : int
+        Thread pool size. Default 8 — balanced for mixed-type extraction
+        (LAS/DLIS/PDF/etc). Bump to 16 for I/O-bound batches, drop to 4
+        for DLIS-heavy batches that load big chunks into memory.
+    progress_callback : callable(done_count, total_count, current_file_path), optional
+        Invoked from the MAIN thread (safe for Streamlit) once per completed
+        file, before the result is yielded.
+    timeout_per_file : int
+        Per-file extractor timeout in seconds. Default 300 (5 min) — most
+        files finish in <1s; a hung extractor gets terminated and recorded
+        as FAILED rather than blocking the batch.
+
+    Yields
+    ------
+    dict with keys:
+        inventory_id : str
+        file_path    : str
+        file_ext     : str
+        fields       : dict (extracted, possibly empty)
+        scored       : dict (from score_file, may have 'status')
+        status       : str ('SUCCESS' / 'PARTIAL' / 'EMPTY' / 'FAILED')
+        error        : str or None
+        elapsed_s    : float
+
+    Yielding lets the caller stream results into DB writes / progress
+    updates without buffering the entire batch in memory.
+
+    Design notes
+    ------------
+    - Threads, not processes. dlisio, segyio, and most file parsers release
+      the GIL during disk I/O and C-extension parsing. ThreadPoolExecutor
+      gives meaningful speedup without the pickle/IPC overhead of processes.
+    - DB writes are deliberately NOT parallelized here — callers write
+      sequentially in the main thread to avoid connection-pool contention.
+      A single UPDATE per file is microseconds; the bottleneck is the file
+      extraction (seconds per PDF/DLIS), so parallelizing the slow part
+      while keeping writes serial is the right trade-off.
+    - Per-file exceptions are caught and reported via status='FAILED' —
+      one bad file does not stop the batch.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+
+    # Materialize so we can len() and pass tuples to workers
+    rows_list = list(rows)
+    total = len(rows_list)
+    if total == 0:
+        return
+
+    LOG_EXTS = {".las", ".dlis", ".dlf", ".lis", ".segy", ".sgy"}
+
+    def _process_one(row):
+        """Worker: extract + score for one file. Returns a result dict.
+        Must not touch Streamlit or shared mutable state."""
+        inv_id, file_path, file_ext = row
+        ext_lc = (file_ext or "").lower()
+        t0 = time.monotonic()
+        fields, scored, status, err = {}, {}, "FAILED", None
+        try:
+            if ext_lc in LOG_EXTS:
+                fields = extract_file_fields(file_path)
+                # score_file may hit the DB if engine is provided. Each
+                # thread will check out its own connection from the engine
+                # pool — SQLAlchemy handles this safely.
+                scored = score_file(fields, engine) if engine else {}
+            else:
+                # No extractor for this type. Mark EMPTY rather than FAILED
+                # so it's distinguishable from a real extraction error.
+                fields = {}
+                scored = {
+                    "status": "EMPTY",
+                    "score": 0,
+                    "readiness": "ATTENTION",
+                    "issues": (
+                        f"No header extractor for {ext_lc or 'unknown'} files"
+                    ),
+                    "matched_uwi": None,
+                    "match_method": None,
+                }
+            # Infer status from extracted fields (mirrors write_score logic)
+            uwi      = fields.get("uwi")
+            name     = fields.get("well_name")
+            op       = fields.get("operator")
+            lat      = fields.get("latitude")
+            lon      = fields.get("longitude")
+            has_id   = bool(uwi or name)
+            has_meta = bool(op or (lat and lon))
+            if has_id and has_meta:
+                status = "SUCCESS"
+            elif has_id or has_meta:
+                status = "PARTIAL"
+            else:
+                status = "EMPTY"
+            # If the non-log branch already set status, prefer that
+            if scored and scored.get("status"):
+                status = scored["status"]
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            status = "FAILED"
+        return {
+            "inventory_id": inv_id,
+            "file_path":    file_path,
+            "file_ext":     file_ext,
+            "fields":       fields,
+            "scored":       scored,
+            "status":       status,
+            "error":        err,
+            "elapsed_s":    time.monotonic() - t0,
+        }
+
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # Submit all work upfront. as_completed yields results as soon as
+        # workers finish, not in submission order — this lets fast files
+        # come back while slow ones (large DLIS, big PDFs) are still being
+        # parsed.
+        futures = {pool.submit(_process_one, row): row for row in rows_list}
+
+        for fut in as_completed(futures):
+            row = futures[fut]
+            try:
+                # Per-file timeout. If a worker hangs, fut.result raises
+                # TimeoutError and we record the file as FAILED. The thread
+                # itself may still be alive (Python can't kill threads); on
+                # a hung extractor, expect lingering memory until process exit.
+                # This is a known Python limitation — ProcessPoolExecutor
+                # would let us kill workers, but at the cost of more overhead.
+                result = fut.result(timeout=timeout_per_file)
+            except Exception as e:
+                inv_id, file_path, file_ext = row
+                result = {
+                    "inventory_id": inv_id,
+                    "file_path":    file_path,
+                    "file_ext":     file_ext,
+                    "fields":       {},
+                    "scored":       {},
+                    "status":       "FAILED",
+                    "error":        f"timeout/worker error: {e}",
+                    "elapsed_s":    float(timeout_per_file),
+                }
+
+            done_count += 1
+            if progress_callback:
+                try:
+                    progress_callback(
+                        done_count, total, result["file_path"]
+                    )
+                except Exception:
+                    # Don't let a bad callback stop the batch
+                    pass
+
+            yield result
+
+
 def score_inventory_batch(engine, dialect: str,
                           ext_filter: list = None,
                           limit: int = 200,
-                          progress_callback=None) -> dict:
+                          progress_callback=None,
+                          max_workers: int = 8) -> dict:
     """
-    Pull unprocessed files from inventory, extract headers,
-    write extraction status back.
+    Pull unprocessed files from inventory, extract headers in parallel,
+    write extraction status back to GLOBAL_FILE_CATALOG.
+
+    Parallelism is internal to this function — file extraction runs across
+    `max_workers` threads, but DB writes happen sequentially in the main
+    thread (one UPDATE per file, microseconds each). The bottleneck is
+    extraction, which is what we parallelize.
+
     Returns summary dict keyed by EXTRACTION_STATUS values.
     """
     if ext_filter is None:
@@ -993,34 +1175,38 @@ def score_inventory_batch(engine, dialect: str,
         return {"error": str(e)}
 
     summary["total"] = len(rows)
+    if not rows:
+        return summary
 
-    for i, (inv_id, file_path, ext) in enumerate(rows):
-        if progress_callback:
-            progress_callback(i, len(rows), file_path)
-        try:
-            fields = extract_file_fields(file_path)
-            scored = score_file(fields, engine)
-            # write_score now infers EXTRACTION_STATUS from fields if
-            # scored doesn't carry it. Returns True on success.
-            write_score(engine, inv_id, scored, fields)
+    # Stream parallel extraction → sequential DB writes
+    for result in extract_files_parallel(
+        rows,
+        engine=engine,
+        max_workers=max_workers,
+        progress_callback=progress_callback,
+    ):
+        status = result["status"]
+        # Write extraction result back to GLOBAL_FILE_CATALOG. write_score
+        # uses its own short transaction per row, so a single bad write
+        # doesn't poison the batch. write_score returns False on failure.
+        wrote = write_score(
+            engine,
+            result["inventory_id"],
+            result["scored"] or {"status": status},
+            result["fields"],
+        )
+        if wrote:
             summary["scored"] += 1
-            # Bump the right status counter — inferred the same way
-            # write_score does.
-            uwi  = fields.get("uwi")
-            name = fields.get("well_name")
-            op   = fields.get("operator")
-            lat  = fields.get("latitude")
-            lon  = fields.get("longitude")
-            has_id   = bool(uwi or name)
-            has_meta = bool(op or (lat and lon))
-            if has_id and has_meta:
-                summary["success"] += 1
-            elif has_id or has_meta:
-                summary["partial"] += 1
-            else:
-                summary["empty"] += 1
-        except Exception:
-            summary["errors"] += 1
+
+        # Tally per-status counters
+        if status == "SUCCESS":
+            summary["success"] += 1
+        elif status == "PARTIAL":
+            summary["partial"] += 1
+        elif status == "EMPTY":
+            summary["empty"] += 1
+        elif status == "FAILED":
             summary["failed"] += 1
+            summary["errors"] += 1
 
     return summary

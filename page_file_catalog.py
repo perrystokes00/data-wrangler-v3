@@ -162,6 +162,20 @@ def _tab_scan(engine, dialect):
                    use_container_width=True):
         st.session_state["fc_enriching"] = False
 
+    # Phase 2 thread count — small UI to tune parallelism. Default 8 works
+    # for mixed extraction (PDF/DLIS/Office). Drop to 2-4 for DLIS-heavy
+    # batches that load big chunks into memory; raise to 16 for many
+    # small files.
+    _w = st.slider(
+        "Phase 2 threads",
+        min_value=1, max_value=16,
+        value=int(st.session_state.get("fc_phase2_workers", 8)),
+        key="fc_phase2_workers_slider",
+        help="Files per chunk extracted in parallel. Lower for DLIS-heavy "
+             "batches; higher for many small files. Default 8.",
+    )
+    st.session_state["fc_phase2_workers"] = _w
+
     # ── Phase 2 chunked loop ──────────────────────────────────────────────────
     if st.session_state.get("fc_enriching"):
         _run_phase2_chunk(engine, dialect)
@@ -358,10 +372,25 @@ def _run_phase2_chunk(engine, dialect):
     """
     Process ENRICH_CHUNK files per Streamlit rerun.
     Writes classification + header fields back to GLOBAL_FILE_CATALOG.
+
+    Extraction within each chunk runs in parallel across PHASE2_WORKERS
+    threads. DB writes stay sequential in the main thread — single-row
+    UPDATEs are microseconds each, so the bottleneck is file parsing
+    (PDFs/DLIS can take seconds), which is what we parallelize.
+
+    The chunked-rerun pattern stays in place: each chunk finishes, Streamlit
+    reruns, the next chunk starts. This keeps the UI responsive (you can hit
+    Stop between chunks) without blocking on the whole catalog in one go.
     """
     from sqlalchemy import text as _t
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     offset = st.session_state.get("fc_enrich_offset", 0)
+
+    # Phase 2 worker count. Default 8 — balanced for mixed extraction
+    # (PDF/DLIS/Office). Read from session state so a future UI toggle
+    # could change it without code edits.
+    PHASE2_WORKERS = int(st.session_state.get("fc_phase2_workers", 8))
 
     try:
         with engine.connect() as con:
@@ -387,20 +416,67 @@ def _run_phase2_chunk(engine, dialect):
         st.session_state["fc_enriching"] = False
         return
 
-    done_this_chunk = 0
-    for inv_id, fpath, fext in rows:
+    # ── Parallel extraction within this chunk ───────────────────────────
+    # Each worker handles one file: read it, extract fields, return result.
+    # Workers don't touch the DB — that happens in the main thread below.
+    # _extract_fields catches its own exceptions and always returns a dict,
+    # so we don't need a worker-level try/except around the call (but we
+    # add one anyway for paranoia).
+    def _worker(row):
+        inv_id, fpath, fext = row
         try:
             fields = _extract_fields(fpath, fext)
-            _write_enrichment(engine, inv_id, fields, dialect)
-            done_this_chunk += 1
-        except Exception:
-            # Mark as attempted so we don't retry forever
+            return ("ok", inv_id, fields, None)
+        except Exception as e:
+            return ("err", inv_id, None, f"{type(e).__name__}: {e}")
+
+    results = []
+    with ThreadPoolExecutor(max_workers=PHASE2_WORKERS) as pool:
+        # Submit all chunk rows, collect results as they complete (order
+        # doesn't matter — we're about to UPDATE them one at a time anyway).
+        futures = [pool.submit(_worker, row) for row in rows]
+        for fut in as_completed(futures):
+            try:
+                results.append(fut.result(timeout=300))  # 5 min/file ceiling
+            except Exception as e:
+                # Timeout or unexpected worker death — record as error.
+                # We can't recover the row from the future, so we lose the
+                # inventory_id for this specific failure; the next chunk
+                # will pick it up again (HEADER_EXTRACTED still NULL).
+                results.append(("err", None, None, f"worker died: {e}"))
+
+    # ── Sequential DB writes in main thread ─────────────────────────────
+    # Single UPDATE per file, microseconds each. Serializing this avoids
+    # SQLAlchemy connection-pool contention from N workers writing at once.
+    done_this_chunk = 0
+    for outcome, inv_id, fields, err in results:
+        if outcome == "ok" and inv_id is not None:
+            try:
+                _write_enrichment(engine, inv_id, fields, dialect)
+                done_this_chunk += 1
+            except Exception:
+                # Write failed — mark the row as errored so we don't retry
+                # forever on it.
+                try:
+                    with engine.begin() as con:
+                        con.execute(_t("""
+                            UPDATE file_catalog.GLOBAL_FILE_CATALOG
+                            SET HEADER_EXTRACTED  = 'E',
+                                EXTRACTION_STATUS = 'FAILED',
+                                ROW_CHANGED_DATE  = GETUTCDATE()
+                            WHERE INVENTORY_ID = :id
+                        """), {"id": inv_id})
+                except Exception:
+                    pass
+        elif inv_id is not None:
+            # Extraction errored — mark as attempted so we don't retry forever
             try:
                 with engine.begin() as con:
                     con.execute(_t("""
                         UPDATE file_catalog.GLOBAL_FILE_CATALOG
-                        SET HEADER_EXTRACTED = 'E',
-                            ROW_CHANGED_DATE = GETUTCDATE()
+                        SET HEADER_EXTRACTED  = 'E',
+                            EXTRACTION_STATUS = 'FAILED',
+                            ROW_CHANGED_DATE  = GETUTCDATE()
                         WHERE INVENTORY_ID = :id
                     """), {"id": inv_id})
             except Exception:
@@ -412,7 +488,7 @@ def _run_phase2_chunk(engine, dialect):
 
     st.progress(pct,
         text=f"Enriching... {processed:,} / {total_pending:,} "
-             f"({done_this_chunk} this pass)")
+             f"({done_this_chunk} this pass · {PHASE2_WORKERS} threads)")
 
     if rows and len(rows) == ENRICH_CHUNK:
         st.rerun()

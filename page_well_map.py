@@ -131,6 +131,7 @@ DB_LAYERS = [
     {"id": "db_production",     "name": "Production Bubbles",  "icon": "📈", "default": False, "order": 5},
     {"id": "db_fields",         "name": "Fields",              "icon": "🌿", "default": False, "order": 6},
     {"id": "db_basins",         "name": "Basins",              "icon": "🏔", "default": False, "order": 7},
+    {"id": "db_seismic_3d",     "name": "Seismic 3D Surveys",  "icon": "🟦", "default": False, "order": 8},
 ]
 
 
@@ -280,6 +281,52 @@ def _qry_basins(_engine) -> pd.DataFrame:
                        centroid_latitude lat, centroid_longitude lon,
                        area_km2, primary_play_type
                 FROM dataview.dv_basin WHERE centroid_latitude IS NOT NULL
+            """), con)
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _qry_seismic_3d(_engine) -> pd.DataFrame:
+    """3D seismic surveys with valid bbox geometry, joined to file path.
+
+    Returns one row per 3D survey footprint. We pull from FILE_SEIS_HEADER
+    where the bbox columns are populated AND the lat values fall in a
+    sane range (sometimes segyio misreads CDP scalars and yields huge
+    out-of-range numbers; those got filtered to NULL at write time by
+    _safe_coord, but old rows from before that fix may still have garbage).
+
+    Joins to GLOBAL_FILE_CATALOG to surface the filename for the popup.
+    """
+    try:
+        with _engine.connect() as con:
+            return pd.read_sql(text("""
+                SELECT
+                    sh.SEIS_HEADER_ID                AS id,
+                    sh.SURVEY_NAME                   AS survey_name,
+                    sh.LINE_NAME                     AS line_name,
+                    sh.CONTRACTOR                    AS contractor,
+                    sh.SURVEY_DATE                   AS survey_date,
+                    sh.TRACE_COUNT                   AS trace_count,
+                    sh.SAMPLE_INTERVAL               AS sample_interval,
+                    sh.EPSG_CODE                     AS epsg_code,
+                    CAST(sh.BBOX_MIN_LAT AS FLOAT)   AS min_lat,
+                    CAST(sh.BBOX_MAX_LAT AS FLOAT)   AS max_lat,
+                    CAST(sh.BBOX_MIN_LON AS FLOAT)   AS min_lon,
+                    CAST(sh.BBOX_MAX_LON AS FLOAT)   AS max_lon,
+                    fc.FILE_NAME                     AS file_name
+                FROM file_catalog.FILE_SEIS_HEADER sh
+                LEFT JOIN file_catalog.GLOBAL_FILE_CATALOG fc
+                    ON fc.INVENTORY_ID = sh.INVENTORY_ID
+                WHERE sh.SEIS_SET_TYPE = '3D'
+                  AND sh.BBOX_MIN_LAT IS NOT NULL
+                  AND sh.BBOX_MAX_LAT IS NOT NULL
+                  AND sh.BBOX_MIN_LON IS NOT NULL
+                  AND sh.BBOX_MAX_LON IS NOT NULL
+                  AND TRY_CAST(sh.BBOX_MIN_LAT AS FLOAT) BETWEEN -90 AND 90
+                  AND TRY_CAST(sh.BBOX_MAX_LAT AS FLOAT) BETWEEN -90 AND 90
+                  AND TRY_CAST(sh.BBOX_MIN_LON AS FLOAT) BETWEEN -180 AND 180
+                  AND TRY_CAST(sh.BBOX_MAX_LON AS FLOAT) BETWEEN -180 AND 180
             """), con)
     except Exception:
         return pd.DataFrame()
@@ -1160,6 +1207,82 @@ def _add_basins(m, df):
                 }), max_width=240),
             tooltip=row.get("basin_name","—"),
         ).add_to(fg)
+    fg.add_to(m)
+
+
+def _add_seismic_3d(m, df):
+    """Render 3D seismic survey footprints as filled rectangles.
+
+    Path A for seismic on the map: bbox-as-rectangle. Each 3D survey shows
+    as a translucent blue rectangle bounded by its BBOX_MIN/MAX_LAT/LON.
+    This is geometrically correct for 3D surveys (they ARE rectangular
+    footprints) — unlike 2D lines, which need actual polyline extraction
+    and are deferred to Stage B.
+
+    Click any rectangle for a popup with file name, contractor, trace
+    count, sample interval, EPSG, and survey date.
+    """
+    if df.empty:
+        return
+    fg = folium.FeatureGroup(
+        name=f"🟦 Seismic 3D Surveys ({len(df):,})", show=False
+    )
+
+    for _, row in df.iterrows():
+        # Defensive bbox sanity. Even after the SQL filter, some rows may
+        # come back with min > max (rare segyio quirk). Skip those — a
+        # negative-area rectangle would render as a line, confusing.
+        try:
+            min_lat = float(row["min_lat"])
+            max_lat = float(row["max_lat"])
+            min_lon = float(row["min_lon"])
+            max_lon = float(row["max_lon"])
+        except (TypeError, ValueError):
+            continue
+        if not (min_lat < max_lat and min_lon < max_lon):
+            continue
+
+        # Skip ludicrously large bboxes — these indicate a CDP_X/Y scalar
+        # misread, where we got raw scaled coordinates instead of lat/lon.
+        # Anything bigger than 5 degrees in either dimension is almost
+        # certainly garbage for a 3D survey (largest single 3D surveys are
+        # ~2 degrees on a side).
+        if (max_lat - min_lat) > 5 or (max_lon - min_lon) > 5:
+            continue
+
+        # Build a popup with the survey metadata that's worth knowing
+        # before someone digs deeper into the file. Trim long values.
+        _name = row.get("survey_name") or row.get("line_name") \
+                or row.get("file_name") or "Unnamed 3D"
+        _name = str(_name)[:80]
+        _popup = folium.Popup(
+            f"<b>🟦 {_name}</b><br>"
+            + _popup_table({
+                "File":     str(row.get("file_name") or "—")[:80],
+                "Contractor": str(row.get("contractor") or "—")[:60],
+                "Date":     str(row.get("survey_date") or "—"),
+                "Traces":   f"{int(row['trace_count']):,}"
+                            if pd.notna(row.get("trace_count")) else "—",
+                "Sample interval": f"{row['sample_interval']:g} μs"
+                            if pd.notna(row.get("sample_interval")) else "—",
+                "EPSG":     str(int(row["epsg_code"]))
+                            if pd.notna(row.get("epsg_code")) else "—",
+                "Extent":   f"{max_lat-min_lat:.3f}° × {max_lon-min_lon:.3f}°",
+            }),
+            max_width=280,
+        )
+
+        folium.Rectangle(
+            bounds=[[min_lat, min_lon], [max_lat, max_lon]],
+            color="#1d4ed8",
+            weight=2,
+            fill=True,
+            fill_color="#3b82f6",
+            fill_opacity=0.25,
+            popup=_popup,
+            tooltip=_name,
+        ).add_to(fg)
+
     fg.add_to(m)
 
 
@@ -2583,6 +2706,9 @@ def run(engine=None):
             _add_fields(m, _qry_fields(engine))
         if "db_basins" in active_db:
             _add_basins(m, _qry_basins(engine))
+        if "db_seismic_3d" in active_db:
+            _msg.info("🟦 Loading 3D seismic surveys…")
+            _add_seismic_3d(m, _qry_seismic_3d(engine))
 
         for lay in active_shp:
             _msg.info(f"🗂 Loading {lay.get('layer_name','layer')}…")

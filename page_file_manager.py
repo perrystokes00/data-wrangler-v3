@@ -439,19 +439,29 @@ def render(engine, dialect: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _run_scoring(engine, dialect, ext_filter, file_count):
-    """Extract headers and score ALL unscored files with progress bar.
-
-    Well-log extensions (.las, .dlis, etc.) get full header extraction.
-    All other types receive a default ATTENTION score so every file
-    appears in the dashboard readiness buckets.
+def _run_scoring(engine, dialect, ext_filter, file_count, max_workers: int = 8):
     """
-    from modules.catalog_rules import extract_file_fields, score_file, write_score
+    Extract headers from all unprocessed files in parallel, write status back.
+
+    Phase 2 of the crawl pipeline. Pulls every row in GLOBAL_FILE_CATALOG
+    that hasn't been extracted yet (HEADER_EXTRACTED NULL or 'N'), runs the
+    extractors in parallel across `max_workers` threads, and writes each
+    file's EXTRACTION_STATUS back to the inventory row.
+
+    Path B buckets:
+      SUCCESS — identifying + metadata fields both extracted
+      PARTIAL — one of identifying/metadata extracted, not both
+      EMPTY   — extractor ran without error but produced no useful fields
+      FAILED  — extractor errored
+
+    The heavy work (PDF/DLIS/SEGY parsing) is what we parallelize. DB writes
+    stay sequential in the main thread — single-row UPDATEs are microseconds
+    each and benefit nothing from parallelism, while serial writes avoid
+    every connection-pool tuning headache.
+    """
+    from modules.catalog_rules import extract_files_parallel, write_score
     from sqlalchemy import text
     from pathlib import Path as _P
-
-    # Extensions that support full header extraction
-    LOG_EXTS = {'.las', '.dlis', '.dlf', '.lis', '.segy', '.sgy'}
 
     try:
         with engine.connect() as con:
@@ -467,53 +477,84 @@ def _run_scoring(engine, dialect, ext_filter, file_count):
 
     total = len(rows)
     if total == 0:
-        st.info("All files already scored.")
+        st.info("All files already extracted.")
         return
 
-    prog  = st.progress(0.0, text=f"Scoring 0/{total}...")
-    ready = review = needs_uwi = attention = errors = 0
-    err_msgs = []
+    prog = st.progress(0.0, text=f"Extracting 0/{total} (parallel × {max_workers})…")
 
-    for i, (inv_id, file_path, ext) in enumerate(rows):
-        prog.progress((i+1)/total,
-            text=f"Scoring {i+1}/{total} · {_P(file_path).name}")
+    # Path B status buckets
+    success = partial_ = empty_ = failed = errors = 0
+    err_msgs: list[str] = []
+
+    # Progress callback runs in the MAIN thread when extract_files_parallel
+    # yields a completed result (safe for Streamlit). The callback only
+    # updates the progress bar; result handling happens in the loop below.
+    def _on_progress(done: int, total_: int, file_path: str):
         try:
-            ext_lc = (ext or '').lower()
-            if ext_lc in LOG_EXTS:
-                # Full header extraction + scoring
-                fields = extract_file_fields(file_path)
-                scored = score_file(fields, engine)
-            else:
-                # No extractor for this type — mark ATTENTION so it shows in dashboard
-                fields = {}
-                scored = {
-                    'score':        0,
-                    'readiness':    'ATTENTION',
-                    'issues':       f'No header extractor for {ext_lc or "unknown"} files',
-                    'matched_uwi':  None,
-                    'match_method': None,
-                }
-            write_score(engine, inv_id, scored, fields)
-            r = scored['readiness']
-            if r == 'READY':       ready += 1
-            elif r == 'REVIEW':    review += 1
-            elif r == 'NEEDS_UWI': needs_uwi += 1
-            else:                  attention += 1
-        except Exception as ex:
+            prog.progress(
+                done / total_,
+                text=f"Extracting {done}/{total_} · {_P(file_path).name}",
+            )
+        except Exception:
+            pass
+
+    # Stream results: parallel extraction → sequential DB writes
+    for result in extract_files_parallel(
+        rows,
+        engine=engine,
+        max_workers=max_workers,
+        progress_callback=_on_progress,
+    ):
+        # Write status back to GLOBAL_FILE_CATALOG. write_score is its own
+        # short transaction per row — a single bad write doesn't stop the
+        # batch.
+        wrote = write_score(
+            engine,
+            result["inventory_id"],
+            result["scored"] or {"status": result["status"]},
+            result["fields"],
+        )
+
+        status = result["status"]
+        if status == "SUCCESS":
+            success += 1
+        elif status == "PARTIAL":
+            partial_ += 1
+        elif status == "EMPTY":
+            empty_ += 1
+        else:  # FAILED
+            failed += 1
             errors += 1
-            err_msgs.append(f"{_P(file_path).name}: {ex}")
+            if result.get("error"):
+                err_msgs.append(
+                    f"{_P(result['file_path']).name}: {result['error']}"
+                )
+
+        if not wrote:
+            # DB write failed (separate from extraction success). Count as
+            # an error but don't double-bucket — the file's extraction
+            # status counter already incremented above.
+            errors += 1
+            err_msgs.append(
+                f"{_P(result['file_path']).name}: DB write failed"
+            )
 
     prog.empty()
+
+    # Path B status display — matches the readiness panel labels below
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("✅ Ready",     ready)
-    c2.metric("👀 Review",    review)
-    c3.metric("🔑 Needs UWI", needs_uwi)
-    c4.metric("⚠️ Attention", attention)
+    c1.metric("✅ Success", success)
+    c2.metric("🟡 Partial", partial_)
+    c3.metric("⚪ Empty",   empty_)
+    c4.metric("❌ Failed",  failed)
+
     if errors:
-        st.caption(f"{errors} files could not be scored.")
-        with st.expander(f"⚠️ {errors} scoring error(s)", expanded=False):
+        st.caption(f"{errors} files had extraction or write errors.")
+        with st.expander(f"⚠️ {errors} error(s)", expanded=False):
             for m in err_msgs[:50]:
                 st.text(m)
+            if len(err_msgs) > 50:
+                st.caption(f"… and {len(err_msgs) - 50} more")
 
 
 def _tab_scan(engine, dialect):
@@ -553,7 +594,11 @@ def _tab_scan(engine, dialect):
         replace = st.checkbox("Replace previous results", value=True, key="inv_replace")
     with col_b:
         max_workers = st.number_input("Threads", min_value=1, max_value=16,
-                                       value=4, key="inv_threads")
+                                       value=4, key="inv_threads",
+                                       help="Used for both Phase 1 (crawl) "
+                                            "and Phase 2 (header extraction). "
+                                            "Lower for DLIS-heavy batches; "
+                                            "higher for many small files.")
 
     st.caption("ℹ️ Scan collects file metadata only. Duplicate detection runs server-side after load.")
     st.divider()
@@ -619,11 +664,15 @@ def _tab_scan(engine, dialect):
             st.success(f"✅ {result['files_inserted']:,} files indexed · "
                        f"{result['duplicates']:,} duplicates detected and excluded from assignments.")
 
-            # Phase 2: Auto-score ALL files immediately after scan
+            # Phase 2: Auto-extract ALL files immediately after scan.
+            # Reuse the same thread count as Phase 1 — one tuner, one
+            # mental model. User who knows their box has 8 cores sets
+            # threads=8 once and both phases honor it.
             if result.get('files_inserted', 0) > 0:
-                st.markdown("**Phase 2 — Scoring files…**")
+                st.markdown(f"**Phase 2 — Extracting headers (parallel × {int(max_workers)})…**")
                 _run_scoring(engine, dialect, selected_exts,
-                             result['files_inserted'])
+                             result['files_inserted'],
+                             max_workers=int(max_workers))
     except Exception as e:
         prog.empty()
         st.error(f"Scan failed: {e}")
