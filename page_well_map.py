@@ -401,6 +401,120 @@ def _qry_wells_in_bbox(
         return [], 0
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _qry_wells_in_circle(
+    _engine,
+    center_lat: float,
+    center_lon: float,
+    radius_m: float,
+    limit: int = 5000,
+) -> tuple[list[dict], int]:
+    """
+    Haversine wells-in-radius query.
+
+    Returns (wells, total_count) — wells capped at `limit`, total_count is
+    the true population inside the circle (may exceed len(wells)).
+
+    Two-stage filter:
+      1. bbox prefilter using IX_dv_well_lat_lon (cheap index range scan)
+      2. Haversine distance check on the prefilter result (Python-side
+         dataframe filter, cheap on ~hundreds of candidates)
+
+    Validated against SSMS — same query pattern, sub-second at current scale,
+    scales to 4M wells with the index in place.
+    """
+    import math as _m
+
+    # bbox prefilter expansion in degrees (rough but generous — we filter
+    # exactly with Haversine afterward)
+    _dlat = radius_m / 111000.0
+    _dlon = radius_m / (
+        111000.0 * max(_m.cos(_m.radians(center_lat)), 0.01)
+    )
+    _min_lat = center_lat - _dlat
+    _max_lat = center_lat + _dlat
+    _min_lon = center_lon - _dlon
+    _max_lon = center_lon + _dlon
+
+    # Two queries: COUNT (with Haversine) then TOP rows (with Haversine).
+    # We can't combine because the COUNT needs the full result, not TOP.
+    # Both queries are fast because of the bbox prefilter on the indexed
+    # columns — Haversine runs only on the candidates inside the bbox.
+    count_sql = """
+        WITH InBox AS (
+            SELECT surface_latitude AS lat, surface_longitude AS lon
+            FROM dataview.dv_well
+            WHERE surface_latitude  BETWEEN :min_lat AND :max_lat
+              AND surface_longitude BETWEEN :min_lon AND :max_lon
+        )
+        SELECT COUNT(*) AS n
+        FROM InBox
+        WHERE 6371000 * 2 * ASIN(SQRT(
+                POWER(SIN(RADIANS(lat - :center_lat) / 2), 2) +
+                COS(RADIANS(:center_lat)) * COS(RADIANS(lat)) *
+                POWER(SIN(RADIANS(lon - :center_lon) / 2), 2)
+            )) <= :radius_m
+    """
+    rows_sql = """
+        WITH InBox AS (
+            SELECT w.uwi, w.well_name, w.well_type, w.well_status,
+                   w.surface_latitude  AS lat,
+                   w.surface_longitude AS lon,
+                   w.county, w.province_state, w.api_num,
+                   CONVERT(VARCHAR(10), w.spud_date,       120) AS spud_date,
+                   CONVERT(VARCHAR(10), w.completion_date, 120) AS completion_date,
+                   w.final_td, w.depth_datum,
+                   w.operator_ba_id, w.field_id,
+                   ISNULL(ba.ba_name,   'Unknown') AS operator_name,
+                   ISNULL(f.field_name, 'Unknown') AS field_name
+            FROM dataview.dv_well w
+            LEFT JOIN dataview.dv_business_associate ba ON ba.ba_id = w.operator_ba_id
+            LEFT JOIN dataview.dv_field f               ON f.field_id      = w.field_id
+            WHERE w.surface_latitude  BETWEEN :min_lat AND :max_lat
+              AND w.surface_longitude BETWEEN :min_lon AND :max_lon
+        )
+        SELECT TOP (:limit) *,
+            6371000 * 2 * ASIN(SQRT(
+                POWER(SIN(RADIANS(lat - :center_lat) / 2), 2) +
+                COS(RADIANS(:center_lat)) * COS(RADIANS(lat)) *
+                POWER(SIN(RADIANS(lon - :center_lon) / 2), 2)
+            )) AS distance_m
+        FROM InBox
+        WHERE 6371000 * 2 * ASIN(SQRT(
+                POWER(SIN(RADIANS(lat - :center_lat) / 2), 2) +
+                COS(RADIANS(:center_lat)) * COS(RADIANS(lat)) *
+                POWER(SIN(RADIANS(lon - :center_lon) / 2), 2)
+            )) <= :radius_m
+        ORDER BY distance_m
+        FOR JSON PATH
+    """
+    params = {
+        "min_lat":    float(_min_lat),
+        "max_lat":    float(_max_lat),
+        "min_lon":    float(_min_lon),
+        "max_lon":    float(_max_lon),
+        "center_lat": float(center_lat),
+        "center_lon": float(center_lon),
+        "radius_m":   float(radius_m),
+        "limit":      int(limit),
+    }
+    try:
+        with _engine.connect().execution_options(timeout=30) as con:
+            total = con.execute(text(count_sql), params).scalar() or 0
+            if total == 0:
+                return [], 0
+
+            json_rows = con.execute(text(rows_sql), params).fetchall()
+            if not json_rows:
+                return [], total
+            json_str = "".join(r[0] for r in json_rows)
+            wells = json.loads(json_str)
+            return wells, int(total)
+    except Exception as exc:
+        st.error(f"Circle query failed: {exc}")
+        return [], 0
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _qry_trajectories(_engine) -> pd.DataFrame:
     try:
@@ -540,7 +654,12 @@ def _trajectory_geojson(df: pd.DataFrame) -> dict:
 # LAYER RENDERERS
 # =============================================================================
 
-def _add_well_grid(m, df: pd.DataFrame, step: float = 0.035) -> int:
+def _add_well_grid(
+    m,
+    df: pd.DataFrame,
+    step: float = 0.035,
+    selected_set: set | None = None,
+) -> int:
     """
     Renders the grid-density overview layer.
 
@@ -551,11 +670,17 @@ def _add_well_grid(m, df: pd.DataFrame, step: float = 0.035) -> int:
     wants a fast overview of where the wells are, without paying the cost of
     serializing 50K individual markers.
 
+    Cells in `selected_set` (a set of "lat_bin|lon_bin" string keys) are
+    rendered with a bold blue outline so the user can see what's queued
+    for the multi-select Commit action.
+
     Args:
         m: folium.Map
         df: result of _qry_well_grid — columns lat_bin, lon_bin, well_count,
             center_lat, center_lon
         step: cell size in degrees (must match what was used to bin)
+        selected_set: optional set of "lat_bin|lon_bin" keys identifying
+            cells the user has multi-selected for drill
 
     Returns:
         number of cells rendered (for status caption)
@@ -589,6 +714,9 @@ def _add_well_grid(m, df: pd.DataFrame, step: float = 0.035) -> int:
         idx = min(int(t * len(palette)), len(palette) - 1)
         return palette[idx]
 
+    if selected_set is None:
+        selected_set = set()
+
     grid_group = folium.FeatureGroup(name="Wells (grid)", show=True)
 
     for row in df.itertuples(index=False):
@@ -605,27 +733,41 @@ def _add_well_grid(m, df: pd.DataFrame, step: float = 0.035) -> int:
             [lat_bin + step, lon_bin + step],    # NE corner
         ]
 
+        # Is this cell currently selected for the multi-select Commit?
+        # Use lat_bin|lon_bin string as the dictionary key — matches how
+        # the click handler stores selections.
+        _cell_key = f"{lat_bin:.4f}|{lon_bin:.4f}"
+        _is_selected = _cell_key in selected_set
+
+        # Selected cells get a bold blue outline. Density color (fill)
+        # stays the same so the user can still read "I selected dense vs
+        # sparse cells." Unselected get the default dark-red thin border.
+        if _is_selected:
+            border_color  = "#1d4ed8"   # bold blue
+            border_weight = 4
+            tooltip_html  = f"<b>{count:,}</b> wells — ✓ selected (click again to deselect)"
+        else:
+            border_color  = "#7f1d1d"   # dark red
+            border_weight = 0.5
+            tooltip_html  = f"<b>{count:,}</b> wells — click to select"
+
         # Render as a Rectangle with a count tooltip and a clickable popup
         # that the click handler recognizes. The "GRID_CELL|lat|lon|step|count"
         # marker is the contract — the click handler in run() regex-matches
-        # this and fires a bbox query for that cell.
-        # We embed the marker via a hidden span (not data attribute) because
+        # this and toggles the cell's selection state.
+        # We embed the marker via a visible (but small/grey) span because
         # modern streamlit-folium strips HTML attributes from popup data.
-        # The visible markup is human-friendly; the marker is plain text.
         _cell_marker = (
             f"GRID_CELL|{lat_bin:.4f}|{lon_bin:.4f}|{step:.4f}|{count}"
         )
         folium.Rectangle(
             bounds=bounds,
-            color="#7f1d1d",      # dark red border
-            weight=0.5,
+            color=border_color,
+            weight=border_weight,
             fill=True,
             fill_color=color,
             fill_opacity=0.55,
-            tooltip=folium.Tooltip(
-                f"<b>{count:,}</b> wells — click to drill in",
-                sticky=True,
-            ),
+            tooltip=folium.Tooltip(tooltip_html, sticky=True),
             popup=folium.Popup(
                 (
                     f"<div style='font-size:11px;line-height:1.4'>"
@@ -634,7 +776,8 @@ def _add_well_grid(m, df: pd.DataFrame, step: float = 0.035) -> int:
                     f"Area: {lat_bin:.2f}–{lat_bin + step:.2f}°N, "
                     f"{lon_bin:.2f}–{lon_bin + step:.2f}°W</span><br>"
                     f"<span style='color:#1a73e8;font-size:10px;font-weight:600'>"
-                    f"📍 Loading individual wells…</span><br>"
+                    f"📍 {'Deselect' if _is_selected else 'Select'} this cell"
+                    f"</span><br>"
                     # The marker — kept visible (small/grey) so streamlit-folium
                     # preserves it in the click return. Don't remove this line.
                     f"<span style='font-size:8px;color:#cbd5e1;"
@@ -2036,8 +2179,8 @@ def run(engine=None):
         with _mode_help:
             if _new_mode == "grid":
                 st.caption(
-                    "🔵 **Grid mode** — fast aggregated overview. "
-                    "Switch to 📍 Wells to draw a rectangle and inspect individual wells."
+                    "🔵 **Grid mode** — click cells to select, **Commit** to drill. "
+                    "Toggle 'Show grid' to hide the heatmap."
                 )
             else:
                 st.caption(
@@ -2045,38 +2188,239 @@ def run(engine=None):
                     "Switch to 🔵 Grid for a fast aggregated view of all wells."
                 )
 
+        # ── Grid-mode controls — Show toggle + multi-select commit ────────
+        # Only relevant when in grid mode. Lays out as:
+        #   [ Show grid ☑ ]  [ Selection: 3 cells (1,847 wells) ]  [ ✅ Commit ] [ ✗ Clear ]
+        # On commit: drill the bbox of the union of selected cells, hide
+        # the grid, zoom the map to the selection extent. Cap: 5,000 wells.
+        if _new_mode == "grid":
+            _MAX_WELLS = 5000
+
+            _sel = list(st.session_state.get("selected_cells", []))
+            _sel_n     = len(_sel)
+            _sel_wells = sum(int(c[2]) for c in _sel) if _sel else 0
+            _over_cap  = _sel_wells > _MAX_WELLS
+
+            c1, c2, c3, c4 = st.columns([2, 4, 2, 1])
+            with c1:
+                _show_grid = st.toggle(
+                    "Show grid",
+                    value=st.session_state.get("grid_visible", True),
+                    key="grid_visible_toggle",
+                    help="Hide the density grid to see just the drilled wells",
+                )
+                if _show_grid != st.session_state.get("grid_visible", True):
+                    st.session_state["grid_visible"] = _show_grid
+                    st.rerun()
+
+            with c2:
+                if _sel_n == 0:
+                    # No cells selected — but wells may be loaded from a
+                    # previous drill (cell Commit or circle). Tell the user
+                    # which state they're in so the Clear button isn't a
+                    # mystery.
+                    _vp_count = len(st.session_state.get("viewport_uwis", []))
+                    if _vp_count:
+                        st.caption(
+                            f"📍 **{_vp_count:,}** wells loaded. Click more "
+                            f"cells or draw a circle to refine, or **Clear** "
+                            f"to start over."
+                        )
+                    else:
+                        st.caption(
+                            "💡 Click grid cells to multi-select, then "
+                            "**Commit** to drill the combined area. Or draw "
+                            "a circle for a radius drill."
+                        )
+                elif _over_cap:
+                    st.error(
+                        f"⚠️ Selection: **{_sel_n}** cell(s) · "
+                        f"~**{_sel_wells:,}** wells — over the {_MAX_WELLS:,} "
+                        f"cap. Deselect dense cells before committing."
+                    )
+                else:
+                    st.success(
+                        f"📐 Selection: **{_sel_n}** cell(s) · "
+                        f"~**{_sel_wells:,}** wells "
+                        f"(cap {_MAX_WELLS:,})"
+                    )
+
+            with c3:
+                _commit_disabled = (_sel_n == 0) or _over_cap
+                if st.button(
+                    "✅ Commit",
+                    key="grid_commit_btn",
+                    disabled=_commit_disabled,
+                    use_container_width=True,
+                    type="primary",
+                ):
+                    # Compute bbox of the union of selected cells
+                    _step = 0.035   # match the grid step
+                    _lats = [c[0] for c in _sel] + [c[0] + _step for c in _sel]
+                    _lons = [c[1] for c in _sel] + [c[1] + _step for c in _sel]
+                    _bbox_min_lat = min(_lats)
+                    _bbox_max_lat = max(_lats)
+                    _bbox_min_lon = min(_lons)
+                    _bbox_max_lon = max(_lons)
+
+                    with st.spinner(
+                        f"Loading up to {_MAX_WELLS:,} wells from "
+                        f"{_sel_n} cell(s)…"
+                    ):
+                        try:
+                            _drilled, _total = _qry_wells_in_bbox(
+                                engine,
+                                _bbox_min_lat, _bbox_max_lat,
+                                _bbox_min_lon, _bbox_max_lon,
+                                limit=_MAX_WELLS,
+                            )
+                        except Exception as _qe:
+                            st.error(f"Drill failed: {_qe}")
+                            _drilled, _total = [], 0
+
+                    if _drilled:
+                        # Save UWIs and cache full well data for tray/scout
+                        # ticket lookups
+                        st.session_state.viewport_uwis = [
+                            w["uwi"] for w in _drilled
+                        ]
+                        _shadow = st.session_state.get("tray_well_data", {})
+                        for w in _drilled:
+                            _shadow[w["uwi"]] = w
+                        st.session_state["tray_well_data"] = _shadow
+
+                        # Tell the map to fit to the selection bounds
+                        st.session_state["_drawn_bounds"] = [
+                            [_bbox_min_lat, _bbox_min_lon],
+                            [_bbox_max_lat, _bbox_max_lon],
+                        ]
+
+                        # Hide the grid — user wants to see the wells now
+                        st.session_state["grid_visible"] = False
+
+                        # Clear the selection buffer — drill done
+                        st.session_state["selected_cells"] = []
+                        st.session_state.pop("_last_grid_click", None)
+
+                        st.success(
+                            f"📐 Loaded **{len(_drilled):,}** wells from "
+                            f"{_sel_n} cell(s). Grid hidden — toggle "
+                            f"'Show grid' to select more."
+                        )
+                        st.rerun()
+                    else:
+                        st.info("No wells found in selected cells")
+
+            with c4:
+                # Clear button now clears EVERYTHING map-selection-related:
+                # - cell multi-select buffer
+                # - drilled wells from any source (cell Commit or circle)
+                # - drawn circle (re-allows drawing the same shape again)
+                # - drawn bounds (so map doesn't snap back to the old area)
+                # - restores grid visibility so user can start a fresh selection
+                # Does NOT touch the tray — that's separate, persistent across
+                # drills. Use 🗑 Clear Tray at the bottom of the page for that.
+                _has_wells  = bool(st.session_state.get("viewport_uwis"))
+                _has_drawn  = bool(st.session_state.get("processed_drawings"))
+                _clear_disabled = not (_sel_n or _has_wells or _has_drawn)
+                if st.button(
+                    "✗ Clear",
+                    key="grid_clear_btn",
+                    disabled=_clear_disabled,
+                    use_container_width=True,
+                    help="Clear cells, drilled wells, and drawn circles",
+                ):
+                    # Cell-selection buffer
+                    st.session_state["selected_cells"] = []
+                    st.session_state.pop("_last_grid_click", None)
+                    # Drilled wells viewport
+                    st.session_state["viewport_uwis"] = []
+                    # Drawn shapes — clearing the dedupe set lets the same
+                    # circle be redrawn from scratch (Leaflet.Draw itself
+                    # keeps its drawn layers until user uses the trash icon
+                    # in the toolbar, which is independent of this)
+                    st.session_state["processed_drawings"] = set()
+                    # Map fit — drop the bounds so the map returns to
+                    # the default/centroid view, not the last drilled area
+                    st.session_state.pop("_drawn_bounds", None)
+                    # Bring the grid back so the user can pick again
+                    st.session_state["grid_visible"] = True
+                    # Signal the view-persist JS to wipe its sessionStorage
+                    # entry on the next render. Otherwise Clear would land
+                    # the map back on the last-viewed area, not the default.
+                    st.session_state["_reset_saved_view"] = True
+                    st.rerun()
+
         # Build map — always show basemap even if no wells
         bm   = BASEMAPS.get(basemap, BASEMAPS["OpenStreetMap"])
 
         # Center priority:
-        #   1. Active viewport (last drawn rectangle) — fit map to its bounds
-        #   2. Explicit zoom target from dropdown
-        #   3. Default: centroid of full filtered dataset
-        _viewport_uwis_for_center = st.session_state.get("viewport_uwis", [])
-        _viewport_bounds = None  # set below if we have a viewport
-        if _viewport_uwis_for_center and not dff.empty:
-            _vp_set  = set(_viewport_uwis_for_center)
-            _vp_subset = dff[dff["uwi"].astype(str).isin(_vp_set)]
-            if not _vp_subset.empty:
-                _vp_lats = _vp_subset["lat"].astype(float)
-                _vp_lons = _vp_subset["lon"].astype(float)
-                _vp_min_lat, _vp_max_lat = float(_vp_lats.min()), float(_vp_lats.max())
-                _vp_min_lon, _vp_max_lon = float(_vp_lons.min()), float(_vp_lons.max())
-                # Pad bounds 30% so zoom is comfortable, not crowded.
-                # Increase if you want to see more surrounding context;
-                # decrease if you want a tighter zoom on the selection.
-                _pad_lat = max(0.005, (_vp_max_lat - _vp_min_lat) * 0.3)
-                _pad_lon = max(0.005, (_vp_max_lon - _vp_min_lon) * 0.3)
+        #   1. _drawn_bounds — set by circle Haversine drill or cell Commit.
+        #      This is the authoritative "show me this area" signal. It's
+        #      stored as [[min_lat, min_lon], [max_lat, max_lon]] in session
+        #      state and used directly without needing the wells in dff.
+        #   2. viewport_uwis + dff lookup — older path for when wells came
+        #      via the main wells query (used to be the rectangle workflow).
+        #   3. Explicit zoom target from dropdown.
+        #   4. Default: centroid of full filtered dataset.
+        _viewport_bounds = None
+
+        # Path 1: _drawn_bounds — authoritative for circle/cell drills.
+        # The handlers that set it already padded if appropriate.
+        _drawn = st.session_state.get("_drawn_bounds")
+        if _drawn and isinstance(_drawn, list) and len(_drawn) == 2:
+            try:
+                _db_min_lat = float(_drawn[0][0])
+                _db_min_lon = float(_drawn[0][1])
+                _db_max_lat = float(_drawn[1][0])
+                _db_max_lon = float(_drawn[1][1])
+                # Pad 15% so the selection isn't pressed against the map edge.
+                # Smaller than the wells-in-dff path because _drawn_bounds is
+                # already the circle's bbox, not a wells-extent-bbox.
+                _pad_lat = max(0.005, (_db_max_lat - _db_min_lat) * 0.15)
+                _pad_lon = max(0.005, (_db_max_lon - _db_min_lon) * 0.15)
                 _viewport_bounds = [
-                    [_vp_min_lat - _pad_lat, _vp_min_lon - _pad_lon],
-                    [_vp_max_lat + _pad_lat, _vp_max_lon + _pad_lon],
+                    [_db_min_lat - _pad_lat, _db_min_lon - _pad_lon],
+                    [_db_max_lat + _pad_lat, _db_max_lon + _pad_lon],
                 ]
-                lat0 = (_vp_min_lat + _vp_max_lat) / 2
-                lon0 = (_vp_min_lon + _vp_max_lon) / 2
+                lat0 = (_db_min_lat + _db_max_lat) / 2
+                lon0 = (_db_min_lon + _db_max_lon) / 2
                 zoom0 = 11  # initial guess, fit_bounds will adjust precisely
+            except (TypeError, ValueError, IndexError):
+                _viewport_bounds = None
+
+        # Path 2: viewport_uwis present in dff — legacy path for when wells
+        # came in via the main query (full wells_df). Still useful in wells
+        # mode or when the main dataset is loaded.
+        if _viewport_bounds is None:
+            _viewport_uwis_for_center = st.session_state.get("viewport_uwis", [])
+            if _viewport_uwis_for_center and not dff.empty:
+                _vp_set  = set(_viewport_uwis_for_center)
+                _vp_subset = dff[dff["uwi"].astype(str).isin(_vp_set)]
+                if not _vp_subset.empty:
+                    _vp_lats = _vp_subset["lat"].astype(float)
+                    _vp_lons = _vp_subset["lon"].astype(float)
+                    _vp_min_lat, _vp_max_lat = float(_vp_lats.min()), float(_vp_lats.max())
+                    _vp_min_lon, _vp_max_lon = float(_vp_lons.min()), float(_vp_lons.max())
+                    # Pad bounds 30% so zoom is comfortable, not crowded.
+                    _pad_lat = max(0.005, (_vp_max_lat - _vp_min_lat) * 0.3)
+                    _pad_lon = max(0.005, (_vp_max_lon - _vp_min_lon) * 0.3)
+                    _viewport_bounds = [
+                        [_vp_min_lat - _pad_lat, _vp_min_lon - _pad_lon],
+                        [_vp_max_lat + _pad_lat, _vp_max_lon + _pad_lon],
+                    ]
+                    lat0 = (_vp_min_lat + _vp_max_lat) / 2
+                    lon0 = (_vp_min_lon + _vp_max_lon) / 2
+                    zoom0 = 11
 
         if _viewport_bounds is None:
             # No viewport — use zoom_target or compute a sensible default.
+            # Note: we deliberately do NOT try to preserve user pan/zoom
+            # state here. Subscribing to streamlit-folium's center/zoom
+            # returns either triggers extra reruns or doesn't reliably
+            # report back in this version, so the trade-off isn't worth
+            # it. Users may see the map snap to default after a cell click
+            # — that's the cost of keeping pan smooth.
             if zoom_target and zoom_target.get("lat"):
                 lat0  = zoom_target["lat"]
                 lon0  = zoom_target["lon"]
@@ -2134,22 +2478,39 @@ def run(engine=None):
         _map_mode = st.session_state.get("map_mode", "grid")
 
         if _map_mode == "grid":
-            _msg.info(f"🔵 Loading grid overview…")
-            try:
-                _grid_df = _qry_well_grid(engine, step=0.035)
-                _cell_count = _add_well_grid(m, _grid_df, step=0.035)
-                if _cell_count:
-                    _msg.info(
-                        f"🔵 Grid: {_cell_count:,} cells · "
-                        f"{int(_grid_df['well_count'].sum()):,} wells aggregated"
+            # Honor the "Show grid" toggle — when off, we still pass through
+            # grid mode but skip the grid render. The user gets just the
+            # basemap + any drilled wells. This is the workflow for "I
+            # already drilled, now I want to see just the wells without
+            # the heatmap underneath."
+            if st.session_state.get("grid_visible", True):
+                _msg.info(f"🔵 Loading grid overview…")
+                try:
+                    _grid_df = _qry_well_grid(engine, step=0.035)
+                    # Pass current selection set so cells the user has
+                    # multi-selected get the bold-blue-outline render.
+                    _sel = st.session_state.get("selected_cells", [])
+                    _sel_keys = {f"{c[0]:.4f}|{c[1]:.4f}" for c in _sel}
+                    _cell_count = _add_well_grid(
+                        m, _grid_df, step=0.035, selected_set=_sel_keys,
                     )
-                else:
-                    _msg.info("🔵 No wells to aggregate")
-            except Exception as _e:
-                st.warning(f"Grid render skipped: {_e}")
-                # If grid fails for any reason, fall back to wells mode
-                # so the user still sees something.
-                st.session_state["map_mode"] = "wells"
+                    if _cell_count:
+                        _sel_n = len(_sel_keys)
+                        _sel_note = f" · {_sel_n} selected" if _sel_n else ""
+                        _msg.info(
+                            f"🔵 Grid: {_cell_count:,} cells · "
+                            f"{int(_grid_df['well_count'].sum()):,} wells aggregated"
+                            f"{_sel_note}"
+                        )
+                    else:
+                        _msg.info("🔵 No wells to aggregate")
+                except Exception as _e:
+                    st.warning(f"Grid render skipped: {_e}")
+                    # If grid fails for any reason, fall back to wells mode
+                    # so the user still sees something.
+                    st.session_state["map_mode"] = "wells"
+            else:
+                _msg.info("🔵 Grid hidden — toggle 'Show grid' to bring it back")
 
             # In grid mode, drilled wells (from clicking a cell or drawing
             # a rectangle) still render as yellow markers ON TOP of the
@@ -2229,27 +2590,30 @@ def run(engine=None):
 
         folium.LayerControl(collapsed=False).add_to(m)
 
-        # Draw toolbar — both rectangle (drag-release, native Leaflet.draw) AND
-        # our custom click-click rectangle (added below as ▭ button) are available.
-        # If one acts up, use the other.
+        # Draw toolbar — circle only. The circle is a bulk cell-selector for
+        # grid mode: drawing one selects every cell whose bbox intersects the
+        # circle's bbox. Wells drill happens at Commit, same as click-select.
         from folium.plugins import Draw
         Draw(
             export=False,
             position="topleft",
             draw_options={
-                "rectangle":    {
-                    "shapeOptions": {"color": "#1a73e8", "weight": 2},
+                "circle":       {
+                    "shapeOptions": {"color": "#1d4ed8", "weight": 2},
                     "metric":       False,
-                    "showArea":     False,
+                    "showRadius":   True,        # show radius while drawing
                     "repeatMode":   False,
+                    # Lift Leaflet.Draw's hidden maxRadius cap. The default
+                    # in some versions silently restricts circles to tens of
+                    # km — we want to allow continent-scale circles, capped
+                    # only by the 5,000-well Haversine return (which warns
+                    # if exceeded). 5,000,000 m = 5,000 km, plenty of room.
+                    "maxRadius":    5_000_000,
+                    "minRadius":    100,         # 100 m minimum (sanity floor)
+                    "feet":         False,       # use km, not feet
                 },
-                "polygon":      {
-                    "shapeOptions": {"color": "#1a73e8", "weight": 2},
-                    "allowIntersection": False,
-                    "showArea":     False,
-                    "repeatMode":   False,
-                },
-                "circle":       False,
+                "rectangle":    False,
+                "polygon":      False,
                 "marker":       False,
                 "circlemarker": False,
                 "polyline":     False,
@@ -2257,123 +2621,254 @@ def run(engine=None):
             edit_options={"edit": False, "remove": True},
         ).add_to(m)
 
-        # Patch Leaflet.draw's existing Rectangle tool to use click-click instead
-        # of click-drag-release. The rectangle button already in the left toolbar
-        # gets the new behavior — no new button needed. Solves the "stuck still
-        # drawing after release" bug because there's no drag/release cycle.
+        # ── JS patch: distinguish pan-drag from click on cells ──────────
+        # Problem: when the user click-and-drags inside a grid cell to pan
+        # the map, Leaflet fires BOTH the pan-drag AND a click event on
+        # the cell, which opens the cell's popup → streamlit-folium reports
+        # the popup → Streamlit re-runs → cell gets toggled into selection.
+        # That's unwanted: a drag is a pan, not a selection gesture.
+        #
+        # Fix: track the mouse position at mousedown. On mouseup, if the
+        # cursor moved more than DRAG_THRESHOLD pixels, suppress the
+        # subsequent click event by calling stopPropagation/preventDefault
+        # before Leaflet's handler runs. Only "honest" clicks (no movement)
+        # reach the cell's popup-open handler.
+        #
+        # Threshold of 5 pixels is the standard UI convention for distinguishing
+        # click from drag — small enough that an unintended hand tremor doesn't
+        # cancel a click, large enough that any deliberate pan registers.
         from branca.element import MacroElement
         from jinja2 import Template
-        rect_picker = MacroElement()
-        rect_picker._name = "dv_rect_clickclick"
-        rect_picker._template = Template(u"""
+        drag_guard = MacroElement()
+        drag_guard._name = "dv_drag_click_guard"
+        drag_guard._template = Template(u"""
             {% macro script(this, kwargs) %}
             (function() {
-                function patch() {
-                    if (typeof L === 'undefined' || !L.Draw || !L.Draw.Rectangle ||
-                        !L.Draw.Feature || !L.Draw.Feature.prototype) {
-                        setTimeout(patch, 200);
+                function install() {
+                    var maps = document.querySelectorAll('.leaflet-container');
+                    if (!maps.length) {
+                        setTimeout(install, 200);
                         return;
                     }
-                    if (window.L_DRAW_RECT_PATCHED) return;
-                    window.L_DRAW_RECT_PATCHED = true;
+                    if (window.DV_DRAG_GUARD_INSTALLED) return;
+                    window.DV_DRAG_GUARD_INSTALLED = true;
 
-                    L.Draw.Rectangle.prototype.addHooks = function() {
-                        L.Draw.Feature.prototype.addHooks.call(this);
-                        if (!this._map) return;
-                        this._map.dragging.disable();
-                        this._map.getContainer().style.cursor = 'crosshair';
-                        this._ccDrawing     = true;
-                        this._ccFirstCorner = null;
-                        this._ccPreview     = null;
+                    var DRAG_THRESHOLD = 5;   // pixels
+                    var downX = null, downY = null, moved = false;
 
-                        var h = L.DomUtil.create('div', 'dv-rect-hint',
-                                                 this._map.getContainer());
-                        h.style.cssText =
-                            'position:absolute;top:10px;left:50%;transform:translateX(-50%);' +
-                            'background:rgba(26,115,232,0.95);color:#fff;padding:6px 14px;' +
-                            'border-radius:4px;font-size:13px;font-family:Arial,sans-serif;' +
-                            'z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,0.3);' +
-                            'pointer-events:none';
-                        h.textContent =
-                            '📐 Click first corner, then click second corner. Esc to cancel.';
-                        this._ccHint = h;
-
-                        this._map.on('click',     this._ccOnClick, this);
-                        this._map.on('mousemove', this._ccOnMove,  this);
-                        var self = this;
-                        this._ccOnKey = function(ev) {
-                            if (ev.key === 'Escape') self.disable();
-                        };
-                        document.addEventListener('keydown', this._ccOnKey);
-                    };
-
-                    L.Draw.Rectangle.prototype.removeHooks = function() {
-                        L.Draw.Feature.prototype.removeHooks.call(this);
-                        if (this._map) {
-                            this._map.dragging.enable();
-                            this._map.getContainer().style.cursor = '';
-                            this._map.off('click',     this._ccOnClick, this);
-                            this._map.off('mousemove', this._ccOnMove,  this);
+                    // Track whether a Leaflet.Draw tool is currently drawing.
+                    // While drawing, the guard must NOT interfere — the draw
+                    // tool's own mouseup→click pipeline needs to complete to
+                    // finalize the shape. Hooking Leaflet's draw:drawstart /
+                    // draw:drawstop events is the official way to know this.
+                    window.DV_DRAW_ACTIVE = false;
+                    function hookDrawEvents() {
+                        // Look for any Leaflet map instance and subscribe to
+                        // its draw events. We walk window for L objects and
+                        // any _leaflet_id-bearing DOM elements.
+                        if (typeof L === 'undefined') {
+                            setTimeout(hookDrawEvents, 200);
+                            return;
                         }
-                        if (this._ccOnKey) {
-                            document.removeEventListener('keydown', this._ccOnKey);
-                            this._ccOnKey = null;
-                        }
-                        if (this._ccPreview) {
-                            try { this._map.removeLayer(this._ccPreview); } catch(e) {}
-                            this._ccPreview = null;
-                        }
-                        if (this._ccHint && this._ccHint.parentNode) {
-                            this._ccHint.parentNode.removeChild(this._ccHint);
-                            this._ccHint = null;
-                        }
-                        this._ccFirstCorner = null;
-                        this._ccDrawing     = false;
-                    };
-
-                    L.Draw.Rectangle.prototype._ccOnClick = function(e) {
-                        if (!this._ccDrawing) return;
-                        if (this._ccFirstCorner === null) {
-                            this._ccFirstCorner = e.latlng;
-                            this._ccPreview = L.rectangle(
-                                [e.latlng, e.latlng],
-                                {color:'#1a73e8', weight:2, dashArray:'5,5',
-                                 fillOpacity:0.1}
-                            ).addTo(this._map);
-                            if (this._ccHint) {
-                                this._ccHint.textContent =
-                                    '📐 Move mouse, then click second corner. Esc to cancel.';
+                        // Leaflet stashes the map instance on the container
+                        // element under a non-standard property. Find it.
+                        maps.forEach(function(el) {
+                            // The map instance is associated via L._leaflet_id
+                            // on the container's child elements. Walk
+                            // window-level Leaflet map registry instead.
+                            for (var k in window) {
+                                try {
+                                    var v = window[k];
+                                    if (v && v._container === el &&
+                                        typeof v.on === 'function') {
+                                        v.on('draw:drawstart', function() {
+                                            window.DV_DRAW_ACTIVE = true;
+                                        });
+                                        v.on('draw:drawstop', function() {
+                                            // Small delay so the finalize
+                                            // mouseup/click sequence completes
+                                            // before we re-enable the guard.
+                                            setTimeout(function() {
+                                                window.DV_DRAW_ACTIVE = false;
+                                            }, 150);
+                                        });
+                                    }
+                                } catch (e) { /* skip */ }
                             }
-                        } else {
-                            var bounds = L.latLngBounds(this._ccFirstCorner, e.latlng);
-                            if (this._ccPreview) {
-                                try { this._map.removeLayer(this._ccPreview); } catch(err) {}
-                                this._ccPreview = null;
+                        });
+                    }
+                    hookDrawEvents();
+
+                    maps.forEach(function(mapEl) {
+                        // Capture phase so we see mousedown/up BEFORE Leaflet does.
+                        mapEl.addEventListener('mousedown', function(ev) {
+                            if (ev.button !== 0) return;   // left button only
+                            if (window.DV_DRAW_ACTIVE) return;  // hands off draw tool
+                            downX = ev.clientX;
+                            downY = ev.clientY;
+                            moved = false;
+                        }, true);
+
+                        mapEl.addEventListener('mousemove', function(ev) {
+                            if (downX === null) return;
+                            if (window.DV_DRAW_ACTIVE) return;
+                            var dx = Math.abs(ev.clientX - downX);
+                            var dy = Math.abs(ev.clientY - downY);
+                            if (dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD) {
+                                moved = true;
                             }
-                            this._shape = L.rectangle(bounds,
-                                this.options.shapeOptions ||
-                                {color:'#1a73e8', weight:2});
-                            this._fireCreatedEvent();
-                            this.disable();
-                        }
-                    };
+                        }, true);
 
-                    L.Draw.Rectangle.prototype._ccOnMove = function(e) {
-                        if (this._ccDrawing && this._ccFirstCorner !== null &&
-                            this._ccPreview) {
-                            this._ccPreview.setBounds(
-                                L.latLngBounds(this._ccFirstCorner, e.latlng));
-                        }
-                    };
-
-                    console.log('dv-rect: Rectangle prototype patched to click-click');
+                        mapEl.addEventListener('mouseup', function(ev) {
+                            if (window.DV_DRAW_ACTIVE) {
+                                // Don't interfere with circle/shape finalize
+                                downX = null; downY = null;
+                                return;
+                            }
+                            downX = null; downY = null;
+                            if (moved) {
+                                // Suppress the click event that Leaflet will
+                                // fire next on this mouseup. One-shot capture
+                                // listener with a 100ms safety timeout.
+                                var killClick = function(ce) {
+                                    ce.stopPropagation();
+                                    ce.preventDefault();
+                                    mapEl.removeEventListener('click', killClick, true);
+                                };
+                                mapEl.addEventListener('click', killClick, true);
+                                setTimeout(function() {
+                                    mapEl.removeEventListener('click', killClick, true);
+                                }, 100);
+                            }
+                        }, true);
+                    });
                 }
-                patch();
+                install();
             })();
             {% endmacro %}
         """)
-        rect_picker._parent = m
-        m.add_child(rect_picker)
+        drag_guard._parent = m
+        m.add_child(drag_guard)
+
+        # ── JS: persist map view (center+zoom) across Streamlit reruns ──
+        # Saves the user's pan/zoom to sessionStorage on every moveend, and
+        # restores on init. This is independent of streamlit-folium's
+        # returned_objects — we communicate state via the browser, not
+        # via Python. Result: clicking a cell triggers a rerun (Streamlit
+        # rebuilds the map), but the JS restore puts the map right back
+        # where the user was looking.
+        #
+        # Storage key: 'dv_map_view' in sessionStorage (per-tab, survives
+        # reruns within the same tab, cleared on tab close).
+        #
+        # Conflict resolution: Python's m.fit_bounds() call wins over the
+        # restore for active drills (circle / cell Commit). We signal this
+        # via the window.DV_SKIP_VIEW_RESTORE flag — set just before
+        # rendering when _drawn_bounds is in play.
+        _has_active_fit = bool(st.session_state.get("_drawn_bounds"))
+        _reset_saved_view = bool(st.session_state.pop("_reset_saved_view", False))
+        view_persist = MacroElement()
+        view_persist._name = "dv_view_persist"
+        view_persist._template = Template(u"""
+            {% macro script(this, kwargs) %}
+            (function() {
+                var SKIP_FLAG  = """ + ("true" if _has_active_fit else "false") + u""";
+                var RESET_FLAG = """ + ("true" if _reset_saved_view else "false") + u""";
+                var STORAGE_KEY = 'dv_map_view';
+
+                // If user just hit Clear, wipe the saved view BEFORE any
+                // restore logic runs.
+                if (RESET_FLAG) {
+                    try { sessionStorage.removeItem(STORAGE_KEY); }
+                    catch (e) { /* silent */ }
+                }
+
+                function install() {
+                    if (typeof L === 'undefined') {
+                        setTimeout(install, 100);
+                        return;
+                    }
+                    // Find the map instance — Leaflet via folium attaches it
+                    // as a window-level variable. Walk the window for any L.Map.
+                    var mapInst = null;
+                    for (var k in window) {
+                        try {
+                            var v = window[k];
+                            if (v && typeof v === 'object'
+                                && v instanceof L.Map
+                                && !v.__dv_view_persist_bound) {
+                                mapInst = v;
+                                break;
+                            }
+                        } catch (e) { /* skip */ }
+                    }
+                    if (!mapInst) {
+                        setTimeout(install, 100);
+                        return;
+                    }
+                    mapInst.__dv_view_persist_bound = true;
+
+                    // RESTORE: read saved view and apply, UNLESS Python is
+                    // actively fitting to a drilled selection. In that case
+                    // the saved view would override the fit_bounds and the
+                    // map wouldn't zoom to the new selection.
+                    if (!SKIP_FLAG) {
+                        try {
+                            var raw = sessionStorage.getItem(STORAGE_KEY);
+                            if (raw) {
+                                var v = JSON.parse(raw);
+                                if (v && typeof v.lat === 'number'
+                                    && typeof v.lng === 'number'
+                                    && typeof v.zoom === 'number') {
+                                    // Defer until after Leaflet's own init.
+                                    setTimeout(function() {
+                                        mapInst.setView(
+                                            [v.lat, v.lng], v.zoom,
+                                            { animate: false }
+                                        );
+                                    }, 0);
+                                }
+                            }
+                        } catch (e) {
+                            // Bad JSON or storage disabled — silent fallback
+                        }
+                    }
+
+                    // SAVE: on moveend (pan release, zoom release, programmatic
+                    // setView), record the new view. Throttle to 200ms so a
+                    // rapid pan doesn't write 50 times.
+                    var saveTimer = null;
+                    function saveView() {
+                        if (saveTimer) clearTimeout(saveTimer);
+                        saveTimer = setTimeout(function() {
+                            try {
+                                var c = mapInst.getCenter();
+                                var z = mapInst.getZoom();
+                                sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+                                    lat:  c.lat,
+                                    lng:  c.lng,
+                                    zoom: z
+                                }));
+                            } catch (e) { /* silent */ }
+                        }, 200);
+                    }
+                    mapInst.on('moveend', saveView);
+                    mapInst.on('zoomend', saveView);
+
+                    // If Python did a fit_bounds (drilled selection), save
+                    // the resulting view too — so subsequent unrelated
+                    // reruns keep the drilled view as the saved state.
+                    if (SKIP_FLAG) {
+                        setTimeout(saveView, 500);
+                    }
+                }
+                install();
+            })();
+            {% endmacro %}
+        """)
+        view_persist._parent = m
+        m.add_child(view_persist)
+
 
         # Crosshair cursor over map, pointer over markers
         folium.Element("""
@@ -2416,13 +2911,19 @@ def run(engine=None):
         _msg.info("🌐 Rendering map in browser…")
         # Try use_container_width if available (streamlit-folium >= 0.18),
         # else fall back to width=None which lets st_folium auto-size.
-        # We subscribe to a few different click signals so we catch whichever
-        # streamlit-folium populates for Rectangle (grid cell) clicks vs
-        # CircleMarker (well) clicks vs map background clicks.
+        # We subscribe ONLY to events we actually consume — fewer events means
+        # fewer Streamlit reruns, which means fewer pan/zoom grey-outs.
+        #   last_object_clicked_popup: used for cell clicks (popup contains
+        #     GRID_CELL marker) and well clicks (popup contains UWI).
+        #   all_drawings: used for circle draw → Haversine well drill.
+        # We do NOT subscribe to last_clicked or last_object_clicked because
+        # they fire on every mouse-down (including the initial click of any
+        # pan/zoom drag), forcing reruns that grey out the map mid-drag.
+        # We also do NOT subscribe to center/zoom — in this version of
+        # streamlit-folium, those trigger additional reruns AND don't reliably
+        # report back, so they neither preserve view nor avoid grey-outs.
         _ret = [
             "last_object_clicked_popup",
-            "last_object_clicked",
-            "last_clicked",
             "all_drawings",
         ]
         try:
@@ -2442,12 +2943,11 @@ def run(engine=None):
 
         # Instructional hint for the spatial select tools
         st.caption(
-            "💡 **Map:** **🔵 Grid mode** shows density (each colored cell = "
-            "wells in that area). **Click a cell** to drill into its wells "
-            "(up to 1,000). **Draw a rectangle** to drill into a custom area "
-            "(up to 2,000 wells). Click any individual well marker to add "
-            "to the tray. Open the tray to view scout tickets and export. "
-            "**Esc** cancels rectangle drawing."
+            "💡 **Map:** Toggle **Show grid** to see/hide the density heatmap. "
+            "**Click cells** to add them to a multi-select, then **Commit** to "
+            "drill the combined area. **OR** draw a **circle** (left toolbar) "
+            "to drill wells inside a radius directly — up to 5,000 wells. "
+            "Click any well marker to add it to the tray. **Esc** cancels."
         )
 
         # ── Session state init ────────────────────────────────────────
@@ -2459,122 +2959,161 @@ def run(engine=None):
             # Default to fast aggregated overview. User can switch to wells
             # mode for the rectangle drill-down workflow.
             st.session_state.map_mode = "grid"
+        if "grid_visible" not in st.session_state:
+            # Show the density grid by default. User can toggle off to focus
+            # on already-drilled wells without grid clutter.
+            st.session_state.grid_visible = True
+        if "selected_cells" not in st.session_state:
+            # Multi-select buffer for grid cells. Each entry is a tuple of
+            # (lat_bin, lon_bin, count). Cleared after Commit drills the
+            # bbox of the union of selections, or after Clear.
+            st.session_state.selected_cells = []
 
-        # ── Spatial select — rectangle/polygon drawn on map ─────────
-        # On rectangle release: (1) save UWIs as a "viewport" — these wells
-        # render as individual interactive markers on the next rerun, on top
-        # of the underlying cluster layer; (2) add the same UWIs to the tray
-        # for batch reporting/export.
+        # ── Spatial select — circle on map drills wells via Haversine ────
+        # When the user draws a circle, we run a Haversine wells-in-radius
+        # query against dv_well. The 5,000-well cap applies; over that we
+        # warn and don't render. This REPLACES the current viewport (cells
+        # and any previous circle drill).
+        #
+        # streamlit-folium / Leaflet.Draw serializes a drawn circle in one
+        # of two ways depending on version:
+        #   (a) GeoJSON Point with `properties.radius` (true circle)
+        #   (b) GeoJSON Polygon (the circle approximated as a polygon)
+        # We handle both — for (a) we use center+radius directly, for (b)
+        # we derive an approximate center+radius from the polygon's bbox.
+        _CIRCLE_CAP = 5000
+
         _raw_drawings = map_data.get("all_drawings") if map_data else None
         drawings = []
         if isinstance(_raw_drawings, list):
-            # list of GeoJSON feature dicts
             drawings = _raw_drawings
         elif isinstance(_raw_drawings, dict):
             drawings = _raw_drawings.get("features", [])
 
-        # Track which drawings we've already processed so we don't re-trigger
-        # the viewport load on every Streamlit rerun (st_folium keeps returning
-        # the same drawings list until the user clears them).
+        # Dedupe — don't reprocess the same drawing on every rerun
         if "processed_drawings" not in st.session_state:
             st.session_state.processed_drawings = set()
 
         if drawings:
             for drawing in drawings:
-                geom = drawing.get("geometry", {})
-                gtype = geom.get("type", "")
+                geom   = drawing.get("geometry", {})
+                gtype  = geom.get("type", "")
                 coords = geom.get("coordinates", [])
+                props  = drawing.get("properties", {}) or {}
 
-                # Hash the geometry so we only process each shape once
                 _geom_hash = hash(json.dumps(geom, sort_keys=True))
                 if _geom_hash in st.session_state.processed_drawings:
                     continue
 
                 try:
-                    if gtype == "Polygon" and coords:
+                    _center_lat = _center_lon = _radius_m = None
+
+                    if gtype == "Point" and coords:
+                        # True circle: GeoJSON Point with radius in metres
+                        _center_lon, _center_lat = coords[0], coords[1]
+                        _radius_m = float(props.get("radius", 0))
+
+                    elif gtype == "Polygon" and coords:
+                        # Approximated as polygon — derive center + radius
+                        # from the polygon's bbox.
                         ring = coords[0]
-                        lons = [c[0] for c in ring]
-                        lats = [c[1] for c in ring]
-                        min_lat, max_lat = min(lats), max(lats)
-                        min_lon, max_lon = min(lons), max(lons)
+                        _min_lat = min(c[1] for c in ring)
+                        _max_lat = max(c[1] for c in ring)
+                        _min_lon = min(c[0] for c in ring)
+                        _max_lon = max(c[0] for c in ring)
+                        _center_lat = (_min_lat + _max_lat) / 2.0
+                        _center_lon = (_min_lon + _max_lon) / 2.0
+                        # Radius = half the diagonal in metres (rough but
+                        # captures the user's intended area)
+                        import math as _m
+                        _dlat_m = (_max_lat - _min_lat) * 111000.0 / 2.0
+                        _dlon_m = (_max_lon - _min_lon) * 111000.0 * \
+                                  _m.cos(_m.radians(_center_lat)) / 2.0
+                        _radius_m = _m.sqrt(_dlat_m ** 2 + _dlon_m ** 2)
 
-                        # Mark this drawing processed regardless of outcome
-                        st.session_state.processed_drawings.add(_geom_hash)
+                    st.session_state.processed_drawings.add(_geom_hash)
 
-                        # PHASE 1: Server-side bbox query.
-                        # Replaces the old in-memory filter, which doesn't
-                        # scale past ~50K wells (full set has to be in
-                        # browser/Python). Bbox query with the spatial
-                        # index returns wells inside in sub-second time
-                        # even at 4M scale.
-                        #
-                        # Returns (wells_list, total_count). If total_count
-                        # exceeds the cap, we don't render — we ask the user
-                        # to draw a smaller box. Capped to keep browser sane.
-                        # Rectangle cap: 2000 wells. Above this, browser
-                        # starts to feel sluggish on each rerun. Single
-                        # grid-cell drill stays at 1000 — rectangles can be
-                        # bigger since the user is actively choosing the
-                        # area.
-                        BBOX_LIMIT = 2000
-                        with st.spinner("Querying wells in selected area…"):
-                            try:
-                                _bbox_wells, _bbox_total = _qry_wells_in_bbox(
-                                    engine,
-                                    min_lat, max_lat,
-                                    min_lon, max_lon,
-                                    limit=BBOX_LIMIT,
-                                )
-                            except Exception as _qe:
-                                st.error(f"Bbox query failed: {_qe}")
-                                _bbox_wells, _bbox_total = [], 0
+                    if _center_lat is None or _radius_m is None or _radius_m <= 0:
+                        continue
 
-                        if _bbox_total == 0:
-                            st.info("No wells found in drawn area")
-                        elif _bbox_total > BBOX_LIMIT:
-                            # Too many wells — render nothing, ask the user
-                            # to refine. Keeps the browser from drowning in
-                            # markers.
-                            st.warning(
-                                f"⚠️ **{_bbox_total:,} wells** in selected area — "
-                                f"too many to render individually "
-                                f"(cap: {BBOX_LIMIT:,}). "
-                                f"**Draw a smaller box** or zoom in further."
+                    # Fire the Haversine query — server-side, capped at 5,000.
+                    with st.spinner(
+                        f"Querying wells within {_radius_m/1000:.1f} km…"
+                    ):
+                        try:
+                            _circle_wells, _circle_total = _qry_wells_in_circle(
+                                engine,
+                                _center_lat, _center_lon, _radius_m,
+                                limit=_CIRCLE_CAP,
                             )
-                            # Don't clear viewport_uwis — the previous
-                            # selection (if any) stays useful
-                        else:
-                            # Renderable count — extract UWIs and stash the
-                            # well data. The viewport markers render in BOTH
-                            # grid and wells modes now, so we don't force a
-                            # mode switch. User stays in whatever mode they
-                            # were in (typically grid).
-                            selected = [w["uwi"] for w in _bbox_wells]
-                            st.session_state.viewport_uwis = selected
+                        except Exception as _qe:
+                            st.error(f"Circle query failed: {_qe}")
+                            _circle_wells, _circle_total = [], 0
 
-                            # Tray-shadow cache: stash full data for every
-                            # well loaded into a viewport, so scout tickets
-                            # work for tray entries even after the user pans
-                            # away and the bbox cache expires.
-                            shadow = st.session_state.get("tray_well_data", {})
-                            for w in _bbox_wells:
-                                shadow[w["uwi"]] = w
-                            st.session_state["tray_well_data"] = shadow
+                    if _circle_total == 0:
+                        st.info(
+                            f"No wells found within {_radius_m/1000:.1f} km of "
+                            f"({_center_lat:.4f}, {_center_lon:.4f})"
+                        )
+                    elif _circle_total > _CIRCLE_CAP:
+                        st.warning(
+                            f"⚠️ **{_circle_total:,} wells** inside the circle — "
+                            f"over the {_CIRCLE_CAP:,} cap. Draw a smaller "
+                            f"circle to inspect this area."
+                        )
+                        # Don't replace viewport — keep what was there
+                    else:
+                        # REPLACE viewport with circle wells (per Q4 answer:
+                        # circle is a fresh look, not additive)
+                        st.session_state.viewport_uwis = [
+                            w["uwi"] for w in _circle_wells
+                        ]
+                        # Cache full data for tray/scout lookups
+                        _shadow = st.session_state.get("tray_well_data", {})
+                        for w in _circle_wells:
+                            _shadow[w["uwi"]] = w
+                        st.session_state["tray_well_data"] = _shadow
 
-                            st.success(
-                                f"📐 Viewport: **{len(selected):,}** wells loaded "
-                                f"as individual markers. Click wells to add to tray."
-                            )
-                            st.rerun()
+                        # Map zooms to center of circle at a zoom level
+                        # appropriate to see the whole radius. We do that by
+                        # setting _drawn_bounds to the circle's bbox — the
+                        # map fits to those bounds on next render.
+                        import math as _m
+                        _dlat = _radius_m / 111000.0
+                        _dlon = _radius_m / (
+                            111000.0 * max(_m.cos(_m.radians(_center_lat)), 0.01)
+                        )
+                        st.session_state["_drawn_bounds"] = [
+                            [_center_lat - _dlat, _center_lon - _dlon],
+                            [_center_lat + _dlat, _center_lon + _dlon],
+                        ]
+
+                        # Clear any cell-selection — circle replaces that
+                        # workflow's output too
+                        st.session_state["selected_cells"] = []
+
+                        # Hide the grid — same as cell Commit. User sees the
+                        # drilled wells without heatmap clutter. Toggle 'Show
+                        # grid' to bring it back for another selection.
+                        st.session_state["grid_visible"] = False
+
+                        st.success(
+                            f"⭕ Loaded **{len(_circle_wells):,}** wells "
+                            f"within {_radius_m/1000:.1f} km. "
+                            f"Grid hidden — toggle 'Show grid' to draw "
+                            f"another circle."
+                        )
+                        st.rerun()
+
                 except Exception as _e:
-                    st.warning(f"Spatial select failed: {_e}")
+                    st.warning(f"Circle drill failed: {_e}")
 
         # ── Parse clicked popup — grid cell OR well UWI ─────────────────
         clicked = map_data.get("last_object_clicked_popup") if map_data else None
         if clicked:
             _clicked_str = str(clicked)
 
-            # First check: is this a GRID_CELL click? Drill into that cell.
+            # First check: is this a GRID_CELL click? Toggle its selection.
             # Format: GRID_CELL|min_lat|min_lon|step|count
             _grid_match = re.search(
                 r"GRID_CELL\|(-?\d+\.\d+)\|(-?\d+\.\d+)\|(\d+\.\d+)\|(\d+)",
@@ -2587,55 +3126,26 @@ def run(engine=None):
                 _gc_count = int(_grid_match.group(4))
 
                 # Dedupe: streamlit-folium keeps returning the same click
-                # data across reruns until something else is clicked. Without
-                # this check we'd re-fire the bbox query every rerun.
+                # data across reruns until something else is clicked.
+                # Without this guard we'd toggle on every rerun.
                 _gc_sig = f"{_gc_lat:.4f}|{_gc_lon:.4f}"
                 if st.session_state.get("_last_grid_click") != _gc_sig:
                     st.session_state["_last_grid_click"] = _gc_sig
 
-                    if _gc_count > 1000:
-                        st.warning(
-                            f"⚠️ Cell has **{_gc_count:,} wells** — too many to "
-                            f"render individually (cap: 1000). Use the rectangle "
-                            f"tool to draw a smaller box inside the cell."
-                        )
+                    # Toggle this cell in/out of the selection buffer.
+                    # The drill happens later when the user hits Commit.
+                    _sel = list(st.session_state.get("selected_cells", []))
+                    _existing_idx = next(
+                        (i for i, c in enumerate(_sel)
+                         if f"{c[0]:.4f}|{c[1]:.4f}" == _gc_sig),
+                        None,
+                    )
+                    if _existing_idx is not None:
+                        _sel.pop(_existing_idx)
                     else:
-                        with st.spinner(f"Loading {_gc_count:,} wells from cell…"):
-                            try:
-                                _cell_wells, _cell_total = _qry_wells_in_bbox(
-                                    engine,
-                                    _gc_lat, _gc_lat + _gc_step,
-                                    _gc_lon, _gc_lon + _gc_step,
-                                    limit=2000,
-                                )
-                            except Exception as _qe:
-                                st.error(f"Cell query failed: {_qe}")
-                                _cell_wells, _cell_total = [], 0
-
-                        if _cell_wells:
-                            st.session_state.viewport_uwis = [
-                                w["uwi"] for w in _cell_wells
-                            ]
-                            # Cache full well data for scout-ticket lookups
-                            shadow = st.session_state.get("tray_well_data", {})
-                            for w in _cell_wells:
-                                shadow[w["uwi"]] = w
-                            st.session_state["tray_well_data"] = shadow
-                            # Set drawn bounds so the map zooms to the cell
-                            st.session_state["_drawn_bounds"] = [
-                                [_gc_lat, _gc_lon],
-                                [_gc_lat + _gc_step, _gc_lon + _gc_step],
-                            ]
-                            # STAY in grid mode — drilled wells render as
-                            # yellow markers on top of the grid layer.
-                            # User keeps the density overview everywhere else.
-                            st.success(
-                                f"📐 Loaded {len(_cell_wells):,} wells from "
-                                f"selected cell."
-                            )
-                            st.rerun()
-                        else:
-                            st.info("No wells found in cell")
+                        _sel.append((_gc_lat, _gc_lon, _gc_count))
+                    st.session_state["selected_cells"] = _sel
+                    st.rerun()
 
             # Otherwise: well UWI extraction (existing behavior)
             else:
@@ -2793,6 +3303,10 @@ def run(engine=None):
                         # repositions correctly next time
                         st.session_state.pop("_last_grid_click", None)
                         st.session_state.pop("_drawn_bounds", None)
+                        # Also clear the multi-cell selection buffer, and
+                        # bring the grid back so the user can pick again
+                        st.session_state["selected_cells"] = []
+                        st.session_state["grid_visible"] = True
                         st.rerun()
 
 
