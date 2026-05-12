@@ -905,36 +905,57 @@ def get_rules(file_type: str) -> dict:
     })
 
 
-# ── Write scores back to GLOBAL_FILE_CATALOG ─────────────────────────────────
+# ── Write extraction status back to GLOBAL_FILE_CATALOG ─────────────────────
 
 def write_score(engine, inventory_id: str, scored: dict,
                 fields: dict) -> bool:
-    """Write catalog score back to GLOBAL_FILE_CATALOG."""
+    """
+    Mark the inventory row as extracted and record extraction status.
+
+    Path B: writes only EXTRACTION_STATUS + HEADER_EXTRACTED. The detailed
+    extracted fields (UWI, WELL_NAME, OPERATOR, etc.) live in
+    FILE_WELL_HEADER / FILE_SEIS_HEADER, populated by file_header_store
+    extractors — NOT here. Keeping the inventory table focused on inventory.
+
+    EXTRACTION_STATUS values:
+      SUCCESS  — extractor returned a useful set of fields (UWI + name + something)
+      PARTIAL  — extractor returned some fields but missing identifying ones
+      EMPTY    — extractor ran without error but produced no useful fields
+      FAILED   — extractor errored (caller should still call this with status='FAILED')
+      SKIPPED  — file type not supported (caller decides)
+
+    The `scored` dict no longer needs score/readiness fields. Caller can
+    pass {'status': 'SUCCESS'} directly, or this function will infer status
+    from the `fields` dict if status is absent.
+    """
     try:
-        issues_str = "; ".join(scored.get("issues", []))[:2000]
+        # Infer status from fields if not provided explicitly
+        status = scored.get("status")
+        if not status:
+            uwi  = fields.get("uwi")
+            name = fields.get("well_name")
+            op   = fields.get("operator")
+            lat  = fields.get("latitude")
+            lon  = fields.get("longitude")
+            has_id   = bool(uwi or name)
+            has_meta = bool(op or (lat and lon))
+            if has_id and has_meta:
+                status = "SUCCESS"
+            elif has_id or has_meta:
+                status = "PARTIAL"
+            else:
+                status = "EMPTY"
+
         with engine.begin() as con:
             con.execute(text("""
                 UPDATE file_catalog.GLOBAL_FILE_CATALOG SET
-                    CATALOG_SCORE     = :score,
-                    CATALOG_READINESS = :readiness,
-                    MATCHED_UWI       = :uwi,
-                    MATCH_METHOD      = :method,
-                    CATALOG_ISSUES    = :issues,
+                    EXTRACTION_STATUS = :status,
                     HEADER_EXTRACTED  = 'Y',
-                    UWI               = COALESCE(UWI, :raw_uwi),
-                    WELL_NAME         = COALESCE(WELL_NAME, :wn),
-                    OPERATOR          = COALESCE(OPERATOR, :op)
+                    ROW_CHANGED_DATE  = SYSUTCDATETIME()
                 WHERE INVENTORY_ID = :inv_id
             """), {
-                "score":     scored.get("score", 0),
-                "readiness": scored.get("readiness", "UNKNOWN"),
-                "uwi":       scored.get("matched_uwi"),
-                "method":    "AUTO",
-                "issues":    issues_str,
-                "raw_uwi":   fields.get("uwi"),
-                "wn":        (fields.get("well_name") or "")[:255],
-                "op":        (fields.get("operator") or "")[:255],
-                "inv_id":    inventory_id,
+                "status": status,
+                "inv_id": inventory_id,
             })
         return True
     except Exception:
@@ -946,15 +967,16 @@ def score_inventory_batch(engine, dialect: str,
                           limit: int = 200,
                           progress_callback=None) -> dict:
     """
-    Pull unscored files from inventory, extract headers,
-    score them and write results back.
-    Returns summary dict.
+    Pull unprocessed files from inventory, extract headers,
+    write extraction status back.
+    Returns summary dict keyed by EXTRACTION_STATUS values.
     """
     if ext_filter is None:
         ext_filter = [".las", ".dlis", ".dlf", ".lis", ".segy", ".sgy"]
 
+    # Path B summary: keyed by EXTRACTION_STATUS, not old Path A bands.
     summary = {"total": 0, "scored": 0, "errors": 0,
-               "ready": 0, "review": 0, "needs_uwi": 0, "attention": 0}
+               "success": 0, "partial": 0, "empty": 0, "failed": 0}
 
     try:
         exts = ",".join(f"\'{e}\'" for e in ext_filter)
@@ -978,12 +1000,27 @@ def score_inventory_batch(engine, dialect: str,
         try:
             fields = extract_file_fields(file_path)
             scored = score_file(fields, engine)
+            # write_score now infers EXTRACTION_STATUS from fields if
+            # scored doesn't carry it. Returns True on success.
             write_score(engine, inv_id, scored, fields)
             summary["scored"] += 1
-            r = scored["readiness"].lower()
-            if r in summary:
-                summary[r] += 1
+            # Bump the right status counter — inferred the same way
+            # write_score does.
+            uwi  = fields.get("uwi")
+            name = fields.get("well_name")
+            op   = fields.get("operator")
+            lat  = fields.get("latitude")
+            lon  = fields.get("longitude")
+            has_id   = bool(uwi or name)
+            has_meta = bool(op or (lat and lon))
+            if has_id and has_meta:
+                summary["success"] += 1
+            elif has_id or has_meta:
+                summary["partial"] += 1
+            else:
+                summary["empty"] += 1
         except Exception:
             summary["errors"] += 1
+            summary["failed"] += 1
 
     return summary

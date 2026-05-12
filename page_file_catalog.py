@@ -171,21 +171,25 @@ def _tab_scan(engine, dialect):
     st.markdown("**Catalog status**")
     try:
         with engine.connect() as con:
+            # Path B: EXTRACTION_STATUS replaces CATALOG_READINESS.
+            # Buckets are operational (did extraction work?), not workflow
+            # (READY/REVIEW/NEEDS_UWI/ATTENTION which were Path A bands).
             counts = con.execute(_t("""
                 SELECT
                     FILE_TYPE_GROUP,
-                    COUNT(*)                                       AS total,
-                    SUM(CASE WHEN HEADER_EXTRACTED='Y' THEN 1 ELSE 0 END) AS enriched,
-                    SUM(CASE WHEN CATALOG_READINESS='READY'    THEN 1 ELSE 0 END) AS ready,
-                    SUM(CASE WHEN CATALOG_READINESS='NEEDS_UWI' THEN 1 ELSE 0 END) AS needs_uwi,
-                    SUM(CASE WHEN CATALOG_READINESS='ATTENTION' THEN 1 ELSE 0 END) AS attention
+                    COUNT(*)                                                 AS total,
+                    SUM(CASE WHEN HEADER_EXTRACTED='Y'      THEN 1 ELSE 0 END) AS enriched,
+                    SUM(CASE WHEN EXTRACTION_STATUS='SUCCESS' THEN 1 ELSE 0 END) AS success,
+                    SUM(CASE WHEN EXTRACTION_STATUS='PARTIAL' THEN 1 ELSE 0 END) AS partial,
+                    SUM(CASE WHEN EXTRACTION_STATUS='EMPTY'   THEN 1 ELSE 0 END) AS empty_,
+                    SUM(CASE WHEN EXTRACTION_STATUS='FAILED'  THEN 1 ELSE 0 END) AS failed
                 FROM file_catalog.GLOBAL_FILE_CATALOG
                 GROUP BY FILE_TYPE_GROUP
                 ORDER BY total DESC
             """)).fetchall()
         if counts:
             df = pd.DataFrame(counts,
-                columns=["Type","Total","Enriched","Ready","Needs UWI","Attention"])
+                columns=["Type","Total","Enriched","Success","Partial","Empty","Failed"])
             st.dataframe(df, hide_index=True, use_container_width=True)
             total = sum(r[1] for r in counts)
             enriched = sum(r[2] for r in counts)
@@ -489,38 +493,45 @@ def _write_enrichment(engine, inv_id: str, fields: dict, dialect: str):
     """Write extracted fields back to GLOBAL_FILE_CATALOG."""
     from sqlalchemy import text as _t
 
-    score, readiness = _score(fields)
+    # Path B: write extraction status only — score is gone, detailed
+    # extracted fields belong in FILE_WELL_HEADER (handled elsewhere).
+    status = _infer_extraction_status(fields)
 
     with engine.begin() as con:
         con.execute(_t("""
             UPDATE file_catalog.GLOBAL_FILE_CATALOG SET
-                CATALOG_SCORE      = :score,
-                CATALOG_READINESS  = :readiness,
-                MATCHED_UWI        = :uwi,
-                CATALOG_ISSUES     = :issues,
-                HEADER_EXTRACTED   = 'Y',
-                ROW_CHANGED_DATE   = GETUTCDATE()
+                EXTRACTION_STATUS = :status,
+                HEADER_EXTRACTED  = 'Y',
+                ROW_CHANGED_DATE  = SYSUTCDATETIME()
             WHERE INVENTORY_ID = :id
         """), {
-            "score":     score,
-            "readiness": readiness,
-            "uwi":       fields.get("uwi"),
-            "issues":    "; ".join(_issues(fields)),
-            "id":        inv_id,
+            "status": status,
+            "id":     inv_id,
         })
 
 
-def _score(fields: dict) -> tuple[int, str]:
-    score = 0
-    if fields.get("uwi"):        score += 40
-    if fields.get("well_name"):  score += 20
-    if fields.get("operator"):   score += 10
-    if fields.get("latitude") and fields.get("longitude"): score += 20
-    if fields.get("total_depth"): score += 10
-    if score >= 80:   return score, "READY"
-    if score >= 60:   return score, "REVIEW"
-    if score >= 30:   return score, "NEEDS_UWI"
-    return score, "ATTENTION"
+def _infer_extraction_status(fields: dict) -> str:
+    """
+    Infer EXTRACTION_STATUS from the extracted-fields dict.
+
+    SUCCESS — identifying field (UWI or well_name) AND metadata
+              (operator or lat/lon) both present
+    PARTIAL — has one but not the other
+    EMPTY   — extraction returned no useful identifying or metadata
+              fields at all
+    """
+    uwi      = fields.get("uwi")
+    name     = fields.get("well_name")
+    op       = fields.get("operator")
+    lat      = fields.get("latitude")
+    lon      = fields.get("longitude")
+    has_id   = bool(uwi or name)
+    has_meta = bool(op or (lat and lon))
+    if has_id and has_meta:
+        return "SUCCESS"
+    if has_id or has_meta:
+        return "PARTIAL"
+    return "EMPTY"
 
 
 def _issues(fields: dict) -> list:

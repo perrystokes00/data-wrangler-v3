@@ -716,57 +716,55 @@ def _render_catalog_readiness(engine):
         pass
 
     st.divider()
-    st.markdown("#### 🎯 Catalog Readiness")
+    st.markdown("#### 🎯 Extraction Status")
     try:
         from sqlalchemy import text as _t
         with engine.connect() as con:
+            # Path B: EXTRACTION_STATUS replaces CATALOG_READINESS.
+            # No avg score either — score is gone in Path B.
             rows = con.execute(_t("""
                 SELECT
-                    CATALOG_READINESS,
-                    COUNT(*) AS cnt,
-                    AVG(CAST(CATALOG_SCORE AS FLOAT)) AS avg_score
+                    EXTRACTION_STATUS,
+                    COUNT(*) AS cnt
                 FROM file_catalog.GLOBAL_FILE_CATALOG
-                WHERE CATALOG_READINESS IS NOT NULL
-                GROUP BY CATALOG_READINESS
-                ORDER BY avg_score DESC
+                WHERE EXTRACTION_STATUS IS NOT NULL
+                GROUP BY EXTRACTION_STATUS
+                ORDER BY cnt DESC
             """)).fetchall()
 
         if not rows:
-            st.info("No files scored yet — run a scan to extract headers and score files.")
+            st.info("No files extracted yet — run a scan to extract headers.")
             return
 
         import pandas as pd
         LABELS = {
-            'READY':     '✅ Ready',
-            'REVIEW':    '👀 Review',
-            'NEEDS_UWI': '🔑 Needs UWI',
-            'ATTENTION': '⚠️ Attention',
-            'ERROR':     '❌ Error',
+            'SUCCESS': '✅ Success',
+            'PARTIAL': '🟡 Partial',
+            'EMPTY':   '⚪ Empty',
+            'FAILED':  '❌ Failed',
+            'SKIPPED': '⏭️ Skipped',
         }
         cols = st.columns(len(rows))
-        for col, (readiness, cnt, avg) in zip(cols, rows):
-            label = LABELS.get(readiness, readiness)
-            col.metric(label, f"{cnt:,}", f"avg score {avg:.0f}")
+        for col, (status, cnt) in zip(cols, rows):
+            label = LABELS.get(status, status)
+            col.metric(label, f"{cnt:,}")
 
         # Breakdown table
-        with st.expander("View readiness details"):
-            df = pd.DataFrame(rows, columns=["Readiness", "Files", "Avg Score"])
-            df["Readiness"] = df["Readiness"].map(LABELS).fillna(df["Readiness"])
+        with st.expander("View extraction details"):
+            df = pd.DataFrame(rows, columns=["Status", "Files"])
+            df["Status"] = df["Status"].map(LABELS).fillna(df["Status"])
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # Re-score button
-        if st.button("🔄 Re-score unscored files", key="rescore_btn"):
-            with st.spinner("Scoring..."):
+        # Re-extract button
+        if st.button("🔄 Re-extract unprocessed files", key="rescore_btn"):
+            with st.spinner("Extracting..."):
                 from modules.catalog_rules import score_inventory_batch
                 summary = score_inventory_batch(engine, "mssql", limit=500)
-                st.success(f"Scored {summary.get('scored', 0)} files — "
-                          f"{summary.get('ready', 0)} ready, "
-                          f"{summary.get('review', 0)} review, "
-                          f"{summary.get('needs_uwi', 0)} needs UWI")
+                st.success(f"Processed {summary.get('scored', 0)} files")
                 st.rerun()
 
     except Exception as e:
-        st.caption(f"Readiness unavailable: {e}")
+        st.caption(f"Extraction status unavailable: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
