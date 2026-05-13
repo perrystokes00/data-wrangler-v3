@@ -2486,6 +2486,31 @@ def run(engine=None):
 
     _status = st.empty()
 
+    # ── Phased progress indicator at the top of the page ───────────────
+    # A single shared progress bar + message that any slow operation can
+    # drive through phases (query → process → render). Hidden when idle.
+    # Operations call _phase(pct, "Status text") to update; _phase(100, "")
+    # clears both widgets. The widgets are placed at the top so the user
+    # always sees them during long loads — they don't have to look down
+    # at the map area to know something is happening.
+    _phase_msg = st.empty()
+    _phase_bar = st.empty()
+
+    def _phase(pct: int, text: str = ""):
+        """Update or clear the top-of-page progress indicator.
+
+        Args:
+            pct: 0–100 progress percent. pct >= 100 clears the indicator.
+            text: status message to display alongside the bar.
+        """
+        if pct >= 100:
+            _phase_msg.empty()
+            _phase_bar.empty()
+        else:
+            if text:
+                _phase_msg.info(text)
+            _phase_bar.progress(min(max(pct, 0), 99))
+
     # Lazy-load strategy: skip the expensive _qry_wells call on first load.
     # Grid mode is the default and doesn't need the full wells list — the
     # density polygons come from a separate aggregation query (sub-second).
@@ -2951,7 +2976,54 @@ def run(engine=None):
 
             _sel = list(st.session_state.get("selected_cells", []))
             _sel_n     = len(_sel)
-            _sel_wells = sum(int(c[2]) for c in _sel) if _sel else 0
+
+            # Look up cell well counts from the cached grid queries. Cells
+            # are stored as (lat_bin, lon_bin, _) — the third element is a
+            # placeholder zero from the coord-based click handler since the
+            # click event itself doesn't carry the count. We re-query the
+            # grid (which is @st.cache_data, so subsequent calls are free)
+            # and match each selected cell to its row.
+            _sel_wells = 0
+            if _sel:
+                # Determine which grids are active (could be one or both)
+                _src = active_area.get("sources", [])
+                _main_grid = None
+                _gom_grid = None
+                if "main" in _src:
+                    try:
+                        _main_grid = _qry_well_grid(engine, step=0.035)
+                    except Exception:
+                        _main_grid = None
+                if "gom" in _src:
+                    try:
+                        _gom_grid = _qry_gom_well_grid(engine)
+                    except Exception:
+                        _gom_grid = None
+
+                # For each selected cell, hit-test against whichever grid
+                # has a matching bin. Cells are deduped by sig already, so
+                # a cell can only belong to one grid even if both are active.
+                for _cell in _sel:
+                    _cl_lat, _cl_lon = float(_cell[0]), float(_cell[1])
+                    _cell_count = 0
+                    # Try main grid first (step 0.035)
+                    if _main_grid is not None and not _main_grid.empty:
+                        _match = _main_grid[
+                            (_main_grid["lat_bin"].round(4) == round(_cl_lat, 4)) &
+                            (_main_grid["lon_bin"].round(4) == round(_cl_lon, 4))
+                        ]
+                        if not _match.empty:
+                            _cell_count = int(_match.iloc[0]["well_count"])
+                    # If no match in main, try GOM grid (step 0.072)
+                    if _cell_count == 0 and _gom_grid is not None and not _gom_grid.empty:
+                        _match = _gom_grid[
+                            (_gom_grid["lat_bin"].round(4) == round(_cl_lat, 4)) &
+                            (_gom_grid["lon_bin"].round(4) == round(_cl_lon, 4))
+                        ]
+                        if not _match.empty:
+                            _cell_count = int(_match.iloc[0]["well_count"])
+                    _sel_wells += _cell_count
+
             _over_cap  = _sel_wells > _MAX_WELLS
 
             c1, c2, c3, c4 = st.columns([2, 4, 2, 1])
@@ -3044,32 +3116,37 @@ def run(engine=None):
                     _total_main = 0
                     _total_gom  = 0
 
-                    with st.spinner(
-                        f"Loading up to {_MAX_WELLS:,} wells from "
-                        f"{_sel_n} cell(s)…"
-                    ):
-                        if "main" in _active_sources:
-                            try:
-                                _drilled_main, _total_main = _qry_wells_in_bbox(
-                                    engine,
-                                    _bbox_min_lat, _bbox_max_lat,
-                                    _bbox_min_lon, _bbox_max_lon,
-                                    limit=_MAX_WELLS,
-                                )
-                            except Exception as _qe:
-                                st.error(f"Main drill failed: {_qe}")
+                    # Phase the drill — query phase per source, then a
+                    # final processing phase before rerun. The map rebuild
+                    # phase (after rerun) is handled separately by the
+                    # grid/marker render blocks which drive _phase too.
+                    _phase(10, f"📐 Drilling up to {_MAX_WELLS:,} wells from {_sel_n} cell(s)…")
 
-                        if "gom" in _active_sources:
-                            try:
-                                _drilled_gom, _total_gom = _qry_gom_wells_in_bbox(
-                                    engine,
-                                    _bbox_min_lat, _bbox_max_lat,
-                                    _bbox_min_lon, _bbox_max_lon,
-                                    limit=_MAX_WELLS,
-                                )
-                            except Exception as _qe:
-                                st.error(f"GOM drill failed: {_qe}")
+                    if "main" in _active_sources:
+                        try:
+                            _phase(25, f"📐 Querying dv_well in selection bbox…")
+                            _drilled_main, _total_main = _qry_wells_in_bbox(
+                                engine,
+                                _bbox_min_lat, _bbox_max_lat,
+                                _bbox_min_lon, _bbox_max_lon,
+                                limit=_MAX_WELLS,
+                            )
+                        except Exception as _qe:
+                            st.error(f"Main drill failed: {_qe}")
 
+                    if "gom" in _active_sources:
+                        try:
+                            _phase(55, f"🛢 Querying dataview_gom.well in selection bbox…")
+                            _drilled_gom, _total_gom = _qry_gom_wells_in_bbox(
+                                engine,
+                                _bbox_min_lat, _bbox_max_lat,
+                                _bbox_min_lon, _bbox_max_lon,
+                                limit=_MAX_WELLS,
+                            )
+                        except Exception as _qe:
+                            st.error(f"GOM drill failed: {_qe}")
+
+                    _phase(85, "📐 Processing drill results…")
                     _total_drilled = len(_drilled_main) + len(_drilled_gom)
 
                     if _total_drilled:
@@ -3105,8 +3182,15 @@ def run(engine=None):
                             [_bbox_max_lat, _bbox_max_lon],
                         ]
 
-                        # Hide the grid — user wants to see the wells now
+                        # Hide the grid — user wants to see the wells now.
+                        # MUST update BOTH the internal grid_visible flag
+                        # AND the widget's session_state key. Otherwise the
+                        # toggle UI shows ON while the render state says OFF,
+                        # and the next user toggle click does nothing because
+                        # the widget thinks it's already in the user's chosen
+                        # state.
                         st.session_state["grid_visible"] = False
+                        st.session_state["grid_visible_toggle"] = False
 
                         # Clear the selection buffer — drill done
                         st.session_state["selected_cells"] = []
@@ -3161,8 +3245,10 @@ def run(engine=None):
                     # Map fit — drop the bounds so the map returns to
                     # the default/centroid view, not the last drilled area
                     st.session_state.pop("_drawn_bounds", None)
-                    # Bring the grid back so the user can pick again
+                    # Bring the grid back so the user can pick again.
+                    # Update BOTH keys (see Commit handler comment for why).
                     st.session_state["grid_visible"] = True
+                    st.session_state["grid_visible_toggle"] = True
                     # Signal the view-persist JS to wipe its sessionStorage
                     # entry on the next render. Otherwise Clear would land
                     # the map back on the last-viewed area, not the default.
@@ -3302,7 +3388,17 @@ def run(engine=None):
         # re-fit the view, destroying any manual zoom the user did to
         # pick a specific cell. Drills (cell-Commit, circle) set
         # _drawn_bounds WITHOUT the oneshot flag, so they persist.
-        if st.session_state.get("_drawn_bounds_oneshot"):
+        #
+        # IMPORTANT: capture whether THIS render is doing a fit BEFORE
+        # we pop the bounds. The view-persist JS later reads SKIP_FLAG
+        # to know if Python is doing a fit (in which case JS skips the
+        # saved-view restore). If we pop the bounds before SKIP_FLAG is
+        # computed, the JS thinks Python did NO fit, restores the old
+        # GOM view, and the user lands in the ocean instead of West Texas.
+        _is_oneshot_fit_this_render = bool(
+            st.session_state.get("_drawn_bounds_oneshot")
+        )
+        if _is_oneshot_fit_this_render:
             st.session_state.pop("_drawn_bounds", None)
             st.session_state.pop("_drawn_bounds_oneshot", None)
 
@@ -3337,7 +3433,9 @@ def run(engine=None):
             if _show_main_grid:
                 _msg.info(f"🔵 Loading grid overview…")
                 try:
+                    _phase(15, "📊 Querying West Texas wells — typically 10-15 seconds…")
                     _grid_df = _qry_well_grid(engine, step=0.035)
+                    _phase(50, f"📊 Aggregating {int(_grid_df['well_count'].sum()):,} wells into grid cells…")
                     # Pass current selection set so cells the user has
                     # multi-selected get the bold-blue-outline render.
                     _sel = st.session_state.get("selected_cells", [])
@@ -3345,6 +3443,9 @@ def run(engine=None):
                     _cell_count = _add_well_grid(
                         m, _grid_df, step=0.035, selected_set=_sel_keys,
                     )
+                    # NOTE: do NOT _phase(100) here — the bar persists
+                    # through to the st_folium call below which is the
+                    # real long pole. Final clear happens after that.
                     if _cell_count:
                         _sel_n = len(_sel_keys)
                         _sel_note = f" · {_sel_n} selected" if _sel_n else ""
@@ -3356,6 +3457,7 @@ def run(engine=None):
                     else:
                         _msg.info("🔵 No wells to aggregate")
                 except Exception as _e:
+                    _phase(100)
                     st.warning(f"Grid render skipped: {_e}")
                     # If grid fails for any reason, fall back to wells mode
                     # so the user still sees something.
@@ -3446,13 +3548,21 @@ def run(engine=None):
         # dispatches the actual bbox query based on active_area sources.
         if "gom" in active_area.get("sources", []):
             _msg.info("🛢 Loading GOM wells grid…")
-            _sel_gom = st.session_state.get("selected_cells", [])
-            _sel_gom_keys = {f"{c[0]:.4f}|{c[1]:.4f}" for c in _sel_gom}
-            _add_gom_well_grid(
-                m, _qry_gom_well_grid(engine),
-                step=0.072,
-                selected_set=_sel_gom_keys,
-            )
+            try:
+                _phase(15, "🛢 Querying Gulf of America wells — typically 15-20 seconds…")
+                _gom_grid_df = _qry_gom_well_grid(engine)
+                _phase(50, f"🛢 Aggregating {int(_gom_grid_df['well_count'].sum()):,} GOM wells into grid cells…")
+                _sel_gom = st.session_state.get("selected_cells", [])
+                _sel_gom_keys = {f"{c[0]:.4f}|{c[1]:.4f}" for c in _sel_gom}
+                _add_gom_well_grid(
+                    m, _gom_grid_df,
+                    step=0.072,
+                    selected_set=_sel_gom_keys,
+                )
+                # NOTE: do NOT _phase(100) here — bar persists to st_folium
+            except Exception as _e:
+                _phase(100)
+                st.warning(f"GOM grid render skipped: {_e}")
 
         # Phase 4: render individual GOM well markers after a Commit drill.
         # The Commit handler stashes drilled wells in viewport_gom_wells;
@@ -3462,8 +3572,10 @@ def run(engine=None):
         # OR without the grid heatmap depending on Show grid toggle state.
         _gom_drilled = st.session_state.get("viewport_gom_wells", [])
         if _gom_drilled:
+            _phase(70, f"🛢 Rendering {len(_gom_drilled):,} drilled GOM wells…")
             _msg.info(f"🛢 Rendering {len(_gom_drilled):,} drilled GOM wells…")
             _add_gom_wells_markers(m, _gom_drilled)
+            # NOTE: do NOT _phase(100) here — bar persists to st_folium
 
         for lay in active_shp:
             _msg.info(f"🗂 Loading {lay.get('layer_name','layer')}…")
@@ -3646,7 +3758,16 @@ def run(engine=None):
         # restore for active drills (circle / cell Commit). We signal this
         # via the window.DV_SKIP_VIEW_RESTORE flag — set just before
         # rendering when _drawn_bounds is in play.
-        _has_active_fit = bool(st.session_state.get("_drawn_bounds"))
+        # _has_active_fit signals to the view-persist JS that Python is
+        # doing a fit_bounds on THIS render, so JS should skip its saved-
+        # view restore. Includes BOTH persistent drilled bounds (still in
+        # session) AND the one-shot bounds we just consumed for this
+        # render. Without the OR, area changes would lose their fit to
+        # the JS's stale saved view from the previous area.
+        _has_active_fit = (
+            bool(st.session_state.get("_drawn_bounds"))
+            or _is_oneshot_fit_this_render
+        )
         _reset_saved_view = bool(st.session_state.pop("_reset_saved_view", False))
         view_persist = MacroElement()
         view_persist._name = "dv_view_persist"
@@ -3808,6 +3929,12 @@ def run(engine=None):
             "last_object_clicked_popup",
             "all_drawings",
         ]
+        # The st_folium call below is the actual long pole — it serializes
+        # the whole map to HTML/JS and the browser parses + renders it.
+        # That's the part the user actually waits for (10-30 sec depending
+        # on map complexity). Keep the top-of-page progress visible
+        # THROUGH this call so the user knows it's still working.
+        _phase(90, "🌐 Rendering map in browser…")
         try:
             map_data = st_folium(
                 m, height=500, use_container_width=True,
@@ -3821,6 +3948,7 @@ def run(engine=None):
                 returned_objects=_ret,
                 key="well_map_folium",
             )
+        _phase(100)
         _msg.empty()
 
         # Instructional hint for the spatial select tools
@@ -3977,7 +4105,9 @@ def run(engine=None):
                         # Hide the grid — same as cell Commit. User sees the
                         # drilled wells without heatmap clutter. Toggle 'Show
                         # grid' to bring it back for another selection.
+                        # Update BOTH keys for widget/state sync.
                         st.session_state["grid_visible"] = False
+                        st.session_state["grid_visible_toggle"] = False
 
                         st.success(
                             f"⭕ Loaded **{len(_circle_wells):,}** wells "
@@ -4224,6 +4354,7 @@ def run(engine=None):
                         # bring the grid back so the user can pick again
                         st.session_state["selected_cells"] = []
                         st.session_state["grid_visible"] = True
+                        st.session_state["grid_visible_toggle"] = True
                         st.rerun()
 
 
