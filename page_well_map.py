@@ -389,13 +389,13 @@ def _qry_seismic_3d(_engine) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=None, show_spinner=False)
-def _qry_gom_well_grid(_engine, step: float = 0.072) -> pd.DataFrame:
+def _qry_gom_well_grid(_engine, step: float = 0.36) -> pd.DataFrame:
     """
     Server-side spatial aggregation for the GOM wells overview layer.
 
     Bins GOM wells (from dataview_gom.well) into square cells of `step`
-    degrees. Default 0.072° is roughly 5 miles N/S at Gulf latitudes
-    (and ~4.4 miles E/W since longitude shrinks toward the equator).
+    degrees. Default 0.36° is roughly 25 miles N/S at Gulf latitudes
+    (and ~22 miles E/W since longitude shrinks toward the equator).
     A coarser step than the offshore lease block density would suggest,
     chosen for visual readability at the zoom levels where users actually
     look at the whole Gulf.
@@ -1696,7 +1696,7 @@ def _add_seismic_3d(m, df):
 def _add_gom_well_grid(
     m,
     df: pd.DataFrame,
-    step: float = 0.072,
+    step: float = 0.36,
     selected_set: set | None = None,
 ) -> int:
     """
@@ -1723,7 +1723,7 @@ def _add_gom_well_grid(
         df: result of _qry_gom_well_grid — columns lat_bin, lon_bin,
             well_count, center_lat, center_lon
         step: cell size in degrees (must match what was used to bin;
-              default 0.072° matches _qry_gom_well_grid — ~5 miles)
+              default 0.36° matches _qry_gom_well_grid — ~25 miles)
         selected_set: optional set of "lat_bin|lon_bin" keys identifying
             cells the user has multi-selected for drill
 
@@ -3014,7 +3014,7 @@ def run(engine=None):
                         ]
                         if not _match.empty:
                             _cell_count = int(_match.iloc[0]["well_count"])
-                    # If no match in main, try GOM grid (step 0.072)
+                    # If no match in main, try GOM grid (step 0.36)
                     if _cell_count == 0 and _gom_grid is not None and not _gom_grid.empty:
                         _match = _gom_grid[
                             (_gom_grid["lat_bin"].round(4) == round(_cl_lat, 4)) &
@@ -3082,7 +3082,7 @@ def run(engine=None):
                     # Determine drill targets from the active area's sources.
                     # Each source has its own step and drill query:
                     #   "main" → 0.035° step → _qry_wells_in_bbox (dv_well)
-                    #   "gom"  → 0.072° step → _qry_gom_wells_in_bbox (dataview_gom.well)
+                    #   "gom"  → 0.36° step → _qry_gom_wells_in_bbox (dataview_gom.well)
                     # If both are active (All regions), we drill both and
                     # store results separately so each renders with its
                     # own marker style.
@@ -3096,7 +3096,7 @@ def run(engine=None):
                     if "main" in _active_sources and "gom" not in _active_sources:
                         _step = 0.035
                     elif "gom" in _active_sources and "main" not in _active_sources:
-                        _step = 0.072
+                        _step = 0.36
                     else:
                         # All-regions or unexpected — use the finer step
                         # since that's what cells were rendered at.
@@ -3568,7 +3568,7 @@ def run(engine=None):
                 _sel_gom_keys = {f"{c[0]:.4f}|{c[1]:.4f}" for c in _sel_gom}
                 _add_gom_well_grid(
                     m, _gom_grid_df,
-                    step=0.072,
+                    step=0.36,
                     selected_set=_sel_gom_keys,
                 )
                 # NOTE: do NOT _phase(100) here — bar persists to st_folium
@@ -4144,7 +4144,7 @@ def run(engine=None):
         _active_sources = active_area.get("sources", [])
         # If active area has both main and gom, we need to know which grid
         # the click landed in. Step values differ — main is 0.035°, gom
-        # is 0.072°. A click could be in either. We test against both and
+        # is 0.36°. A click could be in either. We test against both and
         # take the one whose floor-cell exists in the rendered grid data.
         # For now: if only one source is active, use that step. If both
         # are active, we'll test the click against both grids by hit-test.
@@ -4152,7 +4152,7 @@ def run(engine=None):
         if "main" in _active_sources:
             _cell_steps.append(("main", 0.035))
         if "gom" in _active_sources:
-            _cell_steps.append(("gom", 0.072))
+            _cell_steps.append(("gom", 0.36))
 
         _coord_click = map_data.get("last_object_clicked") if map_data else None
         _handled_as_cell = False
