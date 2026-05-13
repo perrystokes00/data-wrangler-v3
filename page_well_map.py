@@ -132,7 +132,63 @@ DB_LAYERS = [
     {"id": "db_fields",         "name": "Fields",              "icon": "🌿", "default": False, "order": 6},
     {"id": "db_basins",         "name": "Basins",              "icon": "🏔", "default": False, "order": 7},
     {"id": "db_seismic_3d",     "name": "Seismic 3D Surveys",  "icon": "🟦", "default": False, "order": 8},
+    {"id": "db_wells_gom",      "name": "GOM Wells",           "icon": "🛢", "default": True,  "order": 9},
 ]
+
+
+# ── Area registry ────────────────────────────────────────────────────────────
+# Defines which producing-area selectors appear in the top-bar Area dropdown.
+# Each entry binds a label to:
+#   id          — internal area identifier used in render dispatching
+#   sources     — which well-grid query to render for this area. "main"
+#                 means the existing _qry_well_grid (reads dataview.dv_well);
+#                 "gom" means _qry_gom_well_grid (reads dataview_gom.well).
+#                 "all" means both — dispatched separately at render time.
+#   center      — (lat, lon, zoom) used to auto-fit the map when the user
+#                 selects this area. The pan-persistence JS yields to
+#                 _drawn_bounds, so we set _drawn_bounds on area change to
+#                 force the auto-zoom.
+#   enabled     — False for placeholders (regions where data isn't loaded
+#                 yet). Disabled entries still appear in the dropdown so
+#                 the user sees what's coming, but selecting them does
+#                 nothing beyond rendering "All regions" fallback.
+#
+# Future: replace the hardcoded list with a dynamic discovery query that
+# enumerates dataview_<region> schemas. For tonight, hardcoded is fine.
+AREAS = [
+    # Default selection — renders nothing. Page opens with just the basemap;
+    # user must explicitly pick a region to load wells. This prevents the
+    # grey-out + spinner on first page open from auto-firing the grid
+    # aggregation queries.
+    {"label": "— Select area —",    "id": "none",       "sources": [],
+     "center": (39.0, -98.0, 3),   "enabled": True},
+    {"label": "🌎 All regions",     "id": "all",        "sources": ["main", "gom"],
+     "center": (39.0, -98.0, 3),   "enabled": True},
+    {"label": "🌊 Gulf of America", "id": "gom",        "sources": ["gom"],
+     "center": (27.5, -90.0, 6),   "enabled": True},
+    # West Texas — currently held in dataview.dv_well. The "main" source
+    # tag means this area renders via the existing _qry_well_grid path.
+    # When we migrate dv_well to its own per-region schema later, switch
+    # the source tag to that schema's identifier.
+    {"label": "🏜 West Texas",      "id": "west_texas", "sources": ["main"],
+     "center": (32.0, -102.5, 6),  "enabled": True},
+    # Disabled placeholders — visible in dropdown but no data yet
+    {"label": "🌾 Kansas",          "id": "kansas",     "sources": [],
+     "center": (38.5, -98.0, 7),   "enabled": False},
+    {"label": "🌲 Bakken",          "id": "bakken",     "sources": [],
+     "center": (48.0, -103.0, 7),  "enabled": False},
+]
+
+
+# Module-level flag tracking whether run() has been called in this Streamlit
+# process. Set to True on first entry, stays True until the process restarts.
+# Used to force-reset the Area selector widget to "— Select area —" on every
+# fresh Streamlit start, even if browser session state somehow persists the
+# previous selection. Streamlit's session_state can survive browser
+# close/reopen in some configurations, so we need a marker that ONLY
+# survives within a single Python process lifetime — and module-level
+# globals are exactly that.
+_PROCESS_FIRST_RUN_DONE = False
 
 
 # =============================================================================
@@ -329,6 +385,57 @@ def _qry_seismic_3d(_engine) -> pd.DataFrame:
                   AND TRY_CAST(sh.BBOX_MAX_LON AS FLOAT) BETWEEN -180 AND 180
             """), con)
     except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=None, show_spinner=False)
+def _qry_gom_well_grid(_engine, step: float = 0.072) -> pd.DataFrame:
+    """
+    Server-side spatial aggregation for the GOM wells overview layer.
+
+    Bins GOM wells (from dataview_gom.well) into square cells of `step`
+    degrees. Default 0.072° is roughly 5 miles N/S at Gulf latitudes
+    (and ~4.4 miles E/W since longitude shrinks toward the equator).
+    A coarser step than the offshore lease block density would suggest,
+    chosen for visual readability at the zoom levels where users actually
+    look at the whole Gulf.
+
+    Mirrors _qry_well_grid's structure but reads from dataview_gom.well,
+    which has surface_latitude and surface_longitude already as DECIMAL
+    (no CAST needed). The schema separation is what makes this clean:
+    we don't need a UNION across regions, just a focused query against
+    one source-shaped table.
+
+    Cache TTL is None because the GOM well set only changes when the
+    loader runs. After loading, the user may need to clear the cache to
+    see new wells — same caveat as the main dv_well grid.
+
+    Columns returned:
+        lat_bin    — south edge of the cell (degrees)
+        lon_bin    — west edge of the cell (degrees)
+        well_count — wells inside the cell
+        center_lat — centroid of those wells
+        center_lon — centroid of those wells
+    """
+    sql = """
+        DECLARE @step FLOAT = :step;
+        SELECT
+            FLOOR(w.surface_latitude  / @step) * @step AS lat_bin,
+            FLOOR(w.surface_longitude / @step) * @step AS lon_bin,
+            COUNT(*) AS well_count,
+            AVG(CAST(w.surface_latitude  AS FLOAT)) AS center_lat,
+            AVG(CAST(w.surface_longitude AS FLOAT)) AS center_lon
+        FROM dataview_gom.well w
+        WHERE w.surface_latitude  IS NOT NULL
+          AND w.surface_longitude IS NOT NULL
+        GROUP BY FLOOR(w.surface_latitude  / @step),
+                 FLOOR(w.surface_longitude / @step)
+    """
+    try:
+        with _engine.connect() as con:
+            return pd.read_sql(text(sql), con, params={"step": step})
+    except Exception as exc:
+        st.error(f"GOM well grid query failed: {exc}")
         return pd.DataFrame()
 
 
@@ -559,6 +666,196 @@ def _qry_wells_in_circle(
             return wells, int(total)
     except Exception as exc:
         st.error(f"Circle query failed: {exc}")
+        return [], 0
+
+
+# ── GOM well drill queries ──────────────────────────────────────────────────
+# REFACTOR: These mirror _qry_wells_in_bbox and _qry_wells_in_circle but
+# read from dataview_gom.well and return GOM-shaped rows (no operator FK,
+# no field FK, has BOEM-specific fields like bottom_area_code).
+# When the second region (Permian, etc.) lands, these should consolidate
+# with the dv_well versions into a single generic dispatcher.
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _qry_gom_wells_in_bbox(
+    _engine,
+    min_lat: float, max_lat: float,
+    min_lon: float, max_lon: float,
+    limit: int = 1000,
+) -> tuple[list[dict], int]:
+    """
+    Rectangle drill-down query for GOM wells inside a bounding box.
+
+    Mirrors _qry_wells_in_bbox structure but reads from dataview_gom.well.
+    Returns GOM-shaped well dicts with BOEM-native fields (api_well_number,
+    company_name, lease, area/block, water depth, etc.).
+
+    The well_id (UUID) is returned alongside the BOEM API so the popup can
+    show the user-readable identifier while the system tracks the internal
+    one. Indexes ix_dv_well_gom_surface_coords makes this query fast.
+    """
+    count_sql = """
+        SELECT COUNT(*) AS n
+        FROM dataview_gom.well w
+        WHERE w.surface_latitude  BETWEEN :min_lat AND :max_lat
+          AND w.surface_longitude BETWEEN :min_lon AND :max_lon
+    """
+    rows_sql = """
+        SELECT TOP (:limit)
+               CAST(w.well_id AS NVARCHAR(40)) AS well_id,
+               w.api_well_number,
+               w.well_name,
+               w.well_name_suffix,
+               w.company_name,
+               w.surface_lease_number,
+               w.bottom_lease_number,
+               w.bottom_area_code,
+               w.bottom_block_number,
+               w.region,
+               CONVERT(VARCHAR(10), w.spud_date,        120) AS spud_date,
+               CONVERT(VARCHAR(10), w.total_depth_date, 120) AS total_depth_date,
+               CONVERT(VARCHAR(10), w.status_date,      120) AS status_date,
+               w.type_code,
+               w.status_code,
+               CAST(w.surface_latitude  AS FLOAT) AS lat,
+               CAST(w.surface_longitude AS FLOAT) AS lon,
+               CAST(w.bottom_latitude   AS FLOAT) AS bottom_lat,
+               CAST(w.bottom_longitude  AS FLOAT) AS bottom_lon,
+               CAST(w.bh_total_md_ft         AS FLOAT) AS bh_total_md_ft,
+               CAST(w.true_vertical_depth_ft AS FLOAT) AS tvd_ft,
+               CAST(w.water_depth_ft         AS FLOAT) AS water_depth_ft
+        FROM dataview_gom.well w
+        WHERE w.surface_latitude  BETWEEN :min_lat AND :max_lat
+          AND w.surface_longitude BETWEEN :min_lon AND :max_lon
+        ORDER BY w.well_name
+        FOR JSON PATH
+    """
+    params = {
+        "min_lat": float(min_lat), "max_lat": float(max_lat),
+        "min_lon": float(min_lon), "max_lon": float(max_lon),
+        "limit": int(limit),
+    }
+    try:
+        with _engine.connect().execution_options(timeout=30) as con:
+            total = con.execute(text(count_sql), params).scalar() or 0
+            if total == 0:
+                return [], 0
+            json_rows = con.execute(text(rows_sql), params).fetchall()
+            if not json_rows:
+                return [], total
+            json_str = "".join(r[0] for r in json_rows)
+            wells = json.loads(json_str)
+            return wells, int(total)
+    except Exception as exc:
+        st.error(f"GOM bbox query failed: {exc}")
+        return [], 0
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _qry_gom_wells_in_circle(
+    _engine,
+    center_lat: float,
+    center_lon: float,
+    radius_m: float,
+    limit: int = 5000,
+) -> tuple[list[dict], int]:
+    """
+    Haversine drill-down query for GOM wells inside a radius.
+
+    Mirrors _qry_wells_in_circle structure (bbox prefilter + Haversine
+    refinement) but reads from dataview_gom.well. Returns GOM-shaped
+    well dicts ordered by distance from circle center.
+
+    The bbox prefilter uses ix_dv_well_gom_surface_coords; the Haversine
+    distance check then refines to the exact circle. Two queries (COUNT
+    then TOP rows) — same pattern as the dv_well version.
+    """
+    import math as _m
+
+    _dlat = radius_m / 111000.0
+    _dlon = radius_m / (
+        111000.0 * max(_m.cos(_m.radians(center_lat)), 0.01)
+    )
+    _min_lat = center_lat - _dlat
+    _max_lat = center_lat + _dlat
+    _min_lon = center_lon - _dlon
+    _max_lon = center_lon + _dlon
+
+    count_sql = """
+        WITH InBox AS (
+            SELECT CAST(surface_latitude  AS FLOAT) AS lat,
+                   CAST(surface_longitude AS FLOAT) AS lon
+            FROM dataview_gom.well
+            WHERE surface_latitude  BETWEEN :min_lat AND :max_lat
+              AND surface_longitude BETWEEN :min_lon AND :max_lon
+        )
+        SELECT COUNT(*) AS n
+        FROM InBox
+        WHERE 6371000 * 2 * ASIN(SQRT(
+                POWER(SIN(RADIANS(lat - :center_lat) / 2), 2) +
+                COS(RADIANS(:center_lat)) * COS(RADIANS(lat)) *
+                POWER(SIN(RADIANS(lon - :center_lon) / 2), 2)
+            )) <= :radius_m
+    """
+    rows_sql = """
+        WITH InBox AS (
+            SELECT CAST(w.well_id AS NVARCHAR(40)) AS well_id,
+                   w.api_well_number, w.well_name, w.well_name_suffix,
+                   w.company_name, w.surface_lease_number, w.bottom_lease_number,
+                   w.bottom_area_code, w.bottom_block_number, w.region,
+                   CONVERT(VARCHAR(10), w.spud_date,        120) AS spud_date,
+                   CONVERT(VARCHAR(10), w.total_depth_date, 120) AS total_depth_date,
+                   CONVERT(VARCHAR(10), w.status_date,      120) AS status_date,
+                   w.type_code, w.status_code,
+                   CAST(w.surface_latitude  AS FLOAT) AS lat,
+                   CAST(w.surface_longitude AS FLOAT) AS lon,
+                   CAST(w.bottom_latitude   AS FLOAT) AS bottom_lat,
+                   CAST(w.bottom_longitude  AS FLOAT) AS bottom_lon,
+                   CAST(w.bh_total_md_ft         AS FLOAT) AS bh_total_md_ft,
+                   CAST(w.true_vertical_depth_ft AS FLOAT) AS tvd_ft,
+                   CAST(w.water_depth_ft         AS FLOAT) AS water_depth_ft
+            FROM dataview_gom.well w
+            WHERE w.surface_latitude  BETWEEN :min_lat AND :max_lat
+              AND w.surface_longitude BETWEEN :min_lon AND :max_lon
+        )
+        SELECT TOP (:limit) *,
+            6371000 * 2 * ASIN(SQRT(
+                POWER(SIN(RADIANS(lat - :center_lat) / 2), 2) +
+                COS(RADIANS(:center_lat)) * COS(RADIANS(lat)) *
+                POWER(SIN(RADIANS(lon - :center_lon) / 2), 2)
+            )) AS distance_m
+        FROM InBox
+        WHERE 6371000 * 2 * ASIN(SQRT(
+                POWER(SIN(RADIANS(lat - :center_lat) / 2), 2) +
+                COS(RADIANS(:center_lat)) * COS(RADIANS(lat)) *
+                POWER(SIN(RADIANS(lon - :center_lon) / 2), 2)
+            )) <= :radius_m
+        ORDER BY distance_m
+        FOR JSON PATH
+    """
+    params = {
+        "min_lat":    float(_min_lat),
+        "max_lat":    float(_max_lat),
+        "min_lon":    float(_min_lon),
+        "max_lon":    float(_max_lon),
+        "center_lat": float(center_lat),
+        "center_lon": float(center_lon),
+        "radius_m":   float(radius_m),
+        "limit":      int(limit),
+    }
+    try:
+        with _engine.connect().execution_options(timeout=30) as con:
+            total = con.execute(text(count_sql), params).scalar() or 0
+            if total == 0:
+                return [], 0
+            json_rows = con.execute(text(rows_sql), params).fetchall()
+            if not json_rows:
+                return [], total
+            json_str = "".join(r[0] for r in json_rows)
+            wells = json.loads(json_str)
+            return wells, int(total)
+    except Exception as exc:
+        st.error(f"GOM circle query failed: {exc}")
         return [], 0
 
 
@@ -798,15 +1095,13 @@ def _add_well_grid(
             border_weight = 0.5
             tooltip_html  = f"<b>{count:,}</b> wells — click to select"
 
-        # Render as a Rectangle with a count tooltip and a clickable popup
-        # that the click handler recognizes. The "GRID_CELL|lat|lon|step|count"
-        # marker is the contract — the click handler in run() regex-matches
-        # this and toggles the cell's selection state.
-        # We embed the marker via a visible (but small/grey) span because
-        # modern streamlit-folium strips HTML attributes from popup data.
-        _cell_marker = (
-            f"GRID_CELL|{lat_bin:.4f}|{lon_bin:.4f}|{step:.4f}|{count}"
-        )
+        # Render as a Rectangle with a count tooltip. NO popup — popups
+        # trigger streamlit-folium reruns when they auto-close (after the
+        # user pans, hovers, or just waits a moment), and those reruns
+        # rebuild the entire map. Instead, the click handler reads the
+        # click's lat/lon from streamlit-folium's last_object_clicked and
+        # uses floor-division by step to derive which cell was clicked.
+        # The cell coordinates are implicit in the click coordinate.
         folium.Rectangle(
             bounds=bounds,
             color=border_color,
@@ -815,24 +1110,6 @@ def _add_well_grid(
             fill_color=color,
             fill_opacity=0.55,
             tooltip=folium.Tooltip(tooltip_html, sticky=True),
-            popup=folium.Popup(
-                (
-                    f"<div style='font-size:11px;line-height:1.4'>"
-                    f"<b style='font-size:12px'>{count:,} wells</b><br>"
-                    f"<span style='color:#475569'>"
-                    f"Area: {lat_bin:.2f}–{lat_bin + step:.2f}°N, "
-                    f"{lon_bin:.2f}–{lon_bin + step:.2f}°W</span><br>"
-                    f"<span style='color:#1a73e8;font-size:10px;font-weight:600'>"
-                    f"📍 {'Deselect' if _is_selected else 'Select'} this cell"
-                    f"</span><br>"
-                    # The marker — kept visible (small/grey) so streamlit-folium
-                    # preserves it in the click return. Don't remove this line.
-                    f"<span style='font-size:8px;color:#cbd5e1;"
-                    f"font-family:monospace'>{_cell_marker}</span>"
-                    f"</div>"
-                ),
-                max_width=260,
-            ),
         ).add_to(grid_group)
 
     grid_group.add_to(m)
@@ -1063,6 +1340,136 @@ def _add_viewport_wells(m, df, viewport_uwis):
     return len(sub)
 
 
+# ── GOM well marker rendering ────────────────────────────────────────────────
+# REFACTOR: _build_gom_popup_html mirrors the inline popup HTML in
+# _add_viewport_wells; _add_gom_wells_markers mirrors _add_viewport_wells
+# itself. Both should consolidate with a generic well-marker renderer once
+# we have a second per-region pattern in place.
+
+def _build_gom_popup_html(well: dict) -> str:
+    """
+    Build the popup HTML for one GOM well.
+
+    Designed to mirror the dv_well popup visual style while showing
+    GOM-specific fields. The data-well-id attribute lets the click handler
+    extract the GOM well's UUID (parallel to data-uwi for dv_well wells).
+
+    Eight fields visible per the popup spec:
+      1. Well name + Suffix
+      2. BOEM API number
+      3. Operator (company_name)
+      4. Lease (surface + bottom area/block)
+      5. Spud date
+      6. Water depth (ft)
+      7. Total depth MD / TVD (ft)
+      8. Status code / Type code
+    """
+    well_id = well.get("well_id", "")
+    name    = well.get("well_name") or "—"
+    suffix  = well.get("well_name_suffix") or ""
+    api     = well.get("api_well_number") or "—"
+    op      = well.get("company_name") or "—"
+    sl      = well.get("surface_lease_number") or "—"
+    bl      = well.get("bottom_lease_number") or ""
+    area    = well.get("bottom_area_code") or ""
+    block   = (well.get("bottom_block_number") or "").strip()
+    spud    = str(well.get("spud_date") or "—")[:10]
+
+    # Numeric formatting with NaN protection
+    def _fmt_ft(v):
+        try:
+            f = float(v)
+            return f"{f:,.0f} ft" if f == f else "—"  # f==f filters NaN
+        except (TypeError, ValueError):
+            return "—"
+    wd_ft   = _fmt_ft(well.get("water_depth_ft"))
+    md_ft   = _fmt_ft(well.get("bh_total_md_ft"))
+    tvd_ft  = _fmt_ft(well.get("tvd_ft"))
+
+    # Compose lease label — show area/block if available
+    lease_label = sl
+    if area or block:
+        lease_label = f"{sl} ({area} {block})".strip()
+
+    status  = well.get("status_code") or "—"
+    wtype   = well.get("type_code") or "—"
+
+    # Friendly title — combine name + suffix when present
+    title = f"{name} {suffix}".strip() if suffix else name
+
+    # Color the status badge — teal for GOM (matches the layer's palette)
+    return (
+        f"<div data-well-id=\"{well_id}\" data-source=\"gom\" "
+        f"style='font-size:11px;line-height:1.4;padding:0'>"
+        f"<b style='font-size:12px;color:#0f172a'>🛢 {title}</b><br>"
+        f"<span style='font-family:monospace;font-size:10px;color:#888'>"
+        f"API {api}</span><br>"
+        f"<span style='color:#475569;font-size:10px'>{op}</span><br>"
+        f"<span style='color:#475569;font-size:10px'>Lease {lease_label}</span><br>"
+        f"<b style='color:#0f766e;font-size:10px'>{status} · {wtype}</b><br>"
+        f"<span style='font-size:10px;color:#475569'>Spud {spud}</span><br>"
+        f"<span style='font-size:10px;color:#475569'>"
+        f"WD {wd_ft} · MD {md_ft} · TVD {tvd_ft}</span>"
+        f"</div>"
+    )
+
+
+def _add_gom_wells_markers(m, wells: list[dict]) -> int:
+    """
+    Render individual clickable CircleMarkers for drilled GOM wells.
+
+    Called after a cell-Commit or circle-drill against GOM. Each marker is
+    a teal circle with a yellow ring (mirrors dv_well's viewport-select
+    visual style — yellow ring signals "drilled / interactive").
+
+    The popup uses _build_gom_popup_html which embeds data-well-id (the
+    GOM UUID) so the click handler can identify which well was clicked.
+
+    Args:
+        m:     folium.Map
+        wells: list of dicts as returned by _qry_gom_wells_in_bbox or
+               _qry_gom_wells_in_circle
+
+    Returns:
+        number of markers rendered (for status caption)
+    """
+    if not wells:
+        return 0
+
+    fg = folium.FeatureGroup(
+        name=f"🛢 GOM Wells Selection ({len(wells):,})",
+        show=True,
+    )
+
+    rendered = 0
+    for w in wells:
+        try:
+            lat = float(w["lat"])
+            lon = float(w["lon"])
+        except (TypeError, ValueError, KeyError):
+            continue
+
+        popup_html = _build_gom_popup_html(w)
+        title      = w.get("well_name") or w.get("api_well_number") or "—"
+
+        folium.CircleMarker(
+            location=[lat, lon],
+            radius=6,
+            color="#fbbf24",       # amber/gold ring — drilled marker
+            weight=2,
+            fill=True,
+            fill_color="#0f766e",  # deep teal fill — matches GOM grid palette
+            fill_opacity=0.9,
+            opacity=1,
+            popup=folium.Popup(popup_html, max_width=320),
+            tooltip=title,
+        ).add_to(fg)
+        rendered += 1
+
+    fg.add_to(m)
+    return rendered
+
+
 
     if df.empty:
         return
@@ -1284,6 +1691,137 @@ def _add_seismic_3d(m, df):
         ).add_to(fg)
 
     fg.add_to(m)
+
+
+def _add_gom_well_grid(
+    m,
+    df: pd.DataFrame,
+    step: float = 0.072,
+    selected_set: set | None = None,
+) -> int:
+    """
+    Render the GOM wells density-grid overview layer.
+
+    Same architectural pattern as _add_well_grid (main dv_well grid), but
+    reads pre-aggregated cell rows from dataview_gom.well and renders them
+    in a yellow→teal palette to distinguish GOM from the main wells layer
+    (which uses yellow→red).
+
+    Cells with high well counts are dark teal; sparse cells are pale
+    yellow. The user can quickly see where GOM well density is high
+    (productive areas like Mississippi Canyon, Green Canyon) vs low.
+
+    Phase 2 update: cells are now clickable. Each cell carries a popup
+    with the same "GRID_CELL|lat|lon|step|count" marker that the dv_well
+    cells use, so the existing click handler in run() picks them up and
+    toggles them in the shared `selected_cells` buffer. The cells in
+    `selected_set` (string keys of "lat|lon") render with a bold blue
+    outline so the user can see what's queued for Commit.
+
+    Args:
+        m: folium.Map
+        df: result of _qry_gom_well_grid — columns lat_bin, lon_bin,
+            well_count, center_lat, center_lon
+        step: cell size in degrees (must match what was used to bin;
+              default 0.072° matches _qry_gom_well_grid — ~5 miles)
+        selected_set: optional set of "lat_bin|lon_bin" keys identifying
+            cells the user has multi-selected for drill
+
+    Returns:
+        number of cells rendered (for status caption)
+    """
+    if df is None or df.empty:
+        return 0
+
+    import math
+
+    # Log scale on counts so the heatmap is readable across the dynamic
+    # range. Same approach as the main grid — GOM offshore blocks have
+    # similar count-distribution properties (sparse fringe, dense core).
+    max_count = max(int(df["well_count"].max()), 1)
+    log_max = math.log10(max_count + 1) or 1.0
+
+    # Yellow → teal palette. Distinct from the main wells layer
+    # (yellow→red) so overlapping regions are visually distinguishable.
+    # Six stops for smooth gradation.
+    palette = [
+        "#fff5b1",  # 0.0 — very pale yellow (few wells)
+        "#d4f1d4",  # 0.2 — pale mint
+        "#86efac",  # 0.4 — light teal-green
+        "#34d399",  # 0.6 — teal-green
+        "#14b8a6",  # 0.8 — teal (the requested GOM color)
+        "#0f766e",  # 1.0 — deep teal (many wells)
+    ]
+
+    def _color_for(count: int) -> str:
+        if count <= 0:
+            return palette[0]
+        t = math.log10(count + 1) / log_max
+        idx = min(int(t * len(palette)), len(palette) - 1)
+        return palette[idx]
+
+    if selected_set is None:
+        selected_set = set()
+
+    # FeatureGroup name includes well count for at-a-glance scale awareness.
+    total_wells = int(df["well_count"].sum())
+    grid_group = folium.FeatureGroup(
+        name=f"🛢 GOM Wells (grid · {total_wells:,})",
+        show=True,
+    )
+
+    cells_rendered = 0
+    for row in df.itertuples(index=False):
+        try:
+            lat_bin = float(row.lat_bin)
+            lon_bin = float(row.lon_bin)
+            count   = int(row.well_count)
+        except (TypeError, ValueError):
+            continue
+
+        color = _color_for(count)
+        bounds = [
+            [lat_bin, lon_bin],
+            [lat_bin + step, lon_bin + step],
+        ]
+
+        # Is this cell currently in the selection buffer?
+        # The buffer is shared across area sources — Phase 3 will dispatch
+        # the actual Commit drill based on active_area.
+        _cell_key = f"{lat_bin:.4f}|{lon_bin:.4f}"
+        _is_selected = _cell_key in selected_set
+
+        # Selected cells get a bold blue outline. The teal fill color
+        # (density-coded) stays the same so the user can still read
+        # "I selected dense vs sparse cells." Unselected cells get the
+        # default teal-dark thin border.
+        if _is_selected:
+            border_color  = "#1d4ed8"   # bold blue — matches dv_well selected style
+            border_weight = 4
+            tooltip_html  = f"<b>{count:,}</b> GOM wells — ✓ selected (click again to deselect)"
+        else:
+            border_color  = "#0f766e"   # dark teal — matches palette
+            border_weight = 0.5
+            tooltip_html  = f"<b>{count:,}</b> GOM wells — click to select"
+
+        # Render as a Rectangle with a count tooltip. NO popup — popups
+        # trigger streamlit-folium reruns when they auto-close, rebuilding
+        # the entire map. Click coordinates come from last_object_clicked
+        # at the run-level handler; cell identification is via floor-div
+        # of click coords by step.
+        folium.Rectangle(
+            bounds=bounds,
+            color=border_color,
+            weight=border_weight,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.6,
+            tooltip=folium.Tooltip(tooltip_html, sticky=True),
+        ).add_to(grid_group)
+        cells_rendered += 1
+
+    grid_group.add_to(m)
+    return cells_rendered
 
 
 def _add_shapefile_layer(m, engine, layer):
@@ -1910,6 +2448,42 @@ def run(engine=None):
         st.info("Connect to the DataView database first.")
         return
 
+    # Module-level first-run flag must be declared global up front so the
+    # reset block below can read and write it.
+    global _PROCESS_FIRST_RUN_DONE
+
+    # ── Cold-start reset ───────────────────────────────────────────────
+    # When the Streamlit process FIRST runs this module (process startup,
+    # not just a re-render), force a clean slate for:
+    #   - wm_area_sel (the Area dropdown) — defaults to "— Select area —"
+    #   - _wm_prev_area_id (the "what was last selected" tracker)
+    #   - _drawn_bounds (any prior auto-zoom bounds that would re-fit map)
+    # We detect first-run via a module-level global, NOT session_state,
+    # because session_state can survive Streamlit restarts in some
+    # configurations and that's exactly what we're guarding against.
+    if not _PROCESS_FIRST_RUN_DONE:
+        _PROCESS_FIRST_RUN_DONE = True
+        # Force Area selector back to placeholder
+        st.session_state["wm_area_sel"] = "— Select area —"
+        # Clear the area-change tracker so the auto-zoom logic doesn't
+        # see "selection changed from None to placeholder" and fire
+        st.session_state["_wm_prev_area_id"] = "none"
+        # Drop any prior auto-zoom bounds so the map opens at its
+        # default basemap centroid instead of yesterday's Permian view
+        st.session_state.pop("_drawn_bounds", None)
+
+    # Reset the sticky "preload all wells" flag on every page entry. The flag
+    # was originally meant to remember "user already triggered the wells
+    # preload in THIS render cycle, don't re-fire it" — but Streamlit's
+    # session_state persists across cold starts of Streamlit and across
+    # browser refreshes, so it became a permanent trap: once set in any
+    # session, every subsequent cold start would re-fire the 30s _qry_wells
+    # preload. The Area-selector partitioning makes that preload unnecessary
+    # on first paint — the grid layers query their own tables directly. So:
+    # reset to False on every entry. The flag will be re-set later in the
+    # same render cycle if a Query type that needs wells gets selected.
+    st.session_state["_wells_already_loaded"] = False
+
     _status = st.empty()
 
     # Lazy-load strategy: skip the expensive _qry_wells call on first load.
@@ -1993,8 +2567,8 @@ def run(engine=None):
         if _u not in uwi_index:
             uwi_index[_u] = _w
 
-    # ── Top bar above map: Background | Zoom | Query ────────────────
-    top1, top2, top3 = st.columns([1, 1, 2])
+    # ── Top bar above map: Background | Zoom | Query | Area ────────────
+    top1, top2, top3, top4 = st.columns([1, 1, 2, 1])
     with top1:
         basemap = st.selectbox("🖼 Background", list(BASEMAPS.keys()),
                                index=0, key="wm_basemap")
@@ -2029,6 +2603,59 @@ def run(engine=None):
             if not st.session_state.get("_wells_already_loaded", False):
                 st.session_state["_wells_already_loaded"] = True
                 st.rerun()
+    with top4:
+        # Area selector — partitions which region's well data renders on the
+        # map. Single-select. "All regions" shows everything from every
+        # available source. Disabled regions appear in the list but are
+        # treated as "All regions" (no data to show yet).
+        area_labels = [a["label"] for a in AREAS]
+        # Mark disabled regions visually in the dropdown
+        area_labels_display = [
+            (a["label"] if a["enabled"] else f"{a['label']} (no data)")
+            for a in AREAS
+        ]
+        area_sel = st.selectbox(
+            "📍 Area", area_labels_display,
+            index=0, key="wm_area_sel",
+            help="Partition wells by producing area. Each area reads from "
+                 "its own schema (e.g., dataview_gom.well for GOM). "
+                 "'All regions' shows every available source.",
+        )
+        # Map display label back to the registry entry
+        _sel_idx = area_labels_display.index(area_sel)
+        active_area = AREAS[_sel_idx]
+
+        # Auto-zoom to the area's centroid when the selection changes.
+        # We compare the chosen id to the last-seen id and trigger a one-shot
+        # _drawn_bounds set so the existing fit_bounds machinery snaps the
+        # map to the right region.
+        # The placeholder area (id="none") doesn't trigger auto-zoom — it
+        # has no meaningful destination, just stays wherever the user is.
+        _prev_area_id = st.session_state.get("_wm_prev_area_id")
+        if (active_area["enabled"]
+                and active_area["id"] != "none"
+                and active_area["id"] != _prev_area_id):
+            st.session_state["_wm_prev_area_id"] = active_area["id"]
+            # Compute a small bounding box from the centroid + zoom-derived
+            # span. Lower zoom = bigger span. The fit_bounds receiver expects
+            # [[min_lat, min_lon], [max_lat, max_lon]].
+            _clat, _clon, _czoom = active_area["center"]
+            # Rough span based on zoom: each zoom level halves the span
+            _span = max(0.5, 30.0 / (2 ** (_czoom - 4)))
+            st.session_state["_drawn_bounds"] = [
+                [_clat - _span/2, _clon - _span],
+                [_clat + _span/2, _clon + _span],
+            ]
+            # Mark this as a ONE-SHOT fit. The map consumer will pop the
+            # bounds after applying them once, so subsequent reruns (e.g.
+            # cell clicks) don't keep snapping the view back to the area
+            # overview. Cell-Commit drills and circle drills set
+            # _drawn_bounds WITHOUT this flag — those persist correctly.
+            st.session_state["_drawn_bounds_oneshot"] = True
+            # Also reset any cell selection from the prior area — different
+            # region, different cells, no carry-over makes sense
+            st.session_state["selected_cells"] = []
+            st.session_state.pop("_last_grid_click", None)
         if qtype == "operator" and not wells_df.empty:
             qvalue = st.selectbox("Operator",
                 sorted(wells_df["operator_name"].dropna().unique()),
@@ -2155,6 +2782,9 @@ def run(engine=None):
                 active_db.add("db_dst")
             if st.checkbox("📏 Formation Tops",  key="wm_db_tops"):
                 active_db.add("db_formation_tops")
+            # GOM wells are now driven by the top-bar Area selector — no
+            # separate checkbox here. The Area dropdown is the single
+            # source of truth for which region's wells render on the map.
 
         # Registered layers
         active_shp = []
@@ -2377,8 +3007,29 @@ def run(engine=None):
                     use_container_width=True,
                     type="primary",
                 ):
-                    # Compute bbox of the union of selected cells
-                    _step = 0.035   # match the grid step
+                    # Determine drill targets from the active area's sources.
+                    # Each source has its own step and drill query:
+                    #   "main" → 0.035° step → _qry_wells_in_bbox (dv_well)
+                    #   "gom"  → 0.072° step → _qry_gom_wells_in_bbox (dataview_gom.well)
+                    # If both are active (All regions), we drill both and
+                    # store results separately so each renders with its
+                    # own marker style.
+                    _active_sources = active_area.get("sources", [])
+
+                    # Compute the bbox of the union of selected cells.
+                    # Use the step of whichever source is active (or the
+                    # finer of the two if both). Cell coords are stored
+                    # with whichever step they were clicked at; we add the
+                    # step to get the cell's east/north edge.
+                    if "main" in _active_sources and "gom" not in _active_sources:
+                        _step = 0.035
+                    elif "gom" in _active_sources and "main" not in _active_sources:
+                        _step = 0.072
+                    else:
+                        # All-regions or unexpected — use the finer step
+                        # since that's what cells were rendered at.
+                        _step = 0.035
+
                     _lats = [c[0] for c in _sel] + [c[0] + _step for c in _sel]
                     _lons = [c[1] for c in _sel] + [c[1] + _step for c in _sel]
                     _bbox_min_lat = min(_lats)
@@ -2386,33 +3037,69 @@ def run(engine=None):
                     _bbox_min_lon = min(_lons)
                     _bbox_max_lon = max(_lons)
 
+                    # Drill each active source. Errors from one source
+                    # don't block the other — collect results independently.
+                    _drilled_main: list = []
+                    _drilled_gom:  list = []
+                    _total_main = 0
+                    _total_gom  = 0
+
                     with st.spinner(
                         f"Loading up to {_MAX_WELLS:,} wells from "
                         f"{_sel_n} cell(s)…"
                     ):
-                        try:
-                            _drilled, _total = _qry_wells_in_bbox(
-                                engine,
-                                _bbox_min_lat, _bbox_max_lat,
-                                _bbox_min_lon, _bbox_max_lon,
-                                limit=_MAX_WELLS,
-                            )
-                        except Exception as _qe:
-                            st.error(f"Drill failed: {_qe}")
-                            _drilled, _total = [], 0
+                        if "main" in _active_sources:
+                            try:
+                                _drilled_main, _total_main = _qry_wells_in_bbox(
+                                    engine,
+                                    _bbox_min_lat, _bbox_max_lat,
+                                    _bbox_min_lon, _bbox_max_lon,
+                                    limit=_MAX_WELLS,
+                                )
+                            except Exception as _qe:
+                                st.error(f"Main drill failed: {_qe}")
 
-                    if _drilled:
-                        # Save UWIs and cache full well data for tray/scout
-                        # ticket lookups
-                        st.session_state.viewport_uwis = [
-                            w["uwi"] for w in _drilled
-                        ]
-                        _shadow = st.session_state.get("tray_well_data", {})
-                        for w in _drilled:
-                            _shadow[w["uwi"]] = w
-                        st.session_state["tray_well_data"] = _shadow
+                        if "gom" in _active_sources:
+                            try:
+                                _drilled_gom, _total_gom = _qry_gom_wells_in_bbox(
+                                    engine,
+                                    _bbox_min_lat, _bbox_max_lat,
+                                    _bbox_min_lon, _bbox_max_lon,
+                                    limit=_MAX_WELLS,
+                                )
+                            except Exception as _qe:
+                                st.error(f"GOM drill failed: {_qe}")
 
-                        # Tell the map to fit to the selection bounds
+                    _total_drilled = len(_drilled_main) + len(_drilled_gom)
+
+                    if _total_drilled:
+                        # Store main-source results in viewport_uwis +
+                        # tray_well_data shadow (existing pattern).
+                        if _drilled_main:
+                            st.session_state.viewport_uwis = [
+                                w["uwi"] for w in _drilled_main
+                            ]
+                            _shadow = st.session_state.get("tray_well_data", {})
+                            for w in _drilled_main:
+                                _shadow[w["uwi"]] = w
+                            st.session_state["tray_well_data"] = _shadow
+                        else:
+                            # No main drill this time — clear stale viewport
+                            # so it doesn't carry over from a prior drill
+                            st.session_state.viewport_uwis = []
+
+                        # Store GOM-source results in their own viewport
+                        # key. The render path checks this separately and
+                        # uses _add_gom_wells_markers (amber-ring teal-fill
+                        # style) for these wells.
+                        if _drilled_gom:
+                            st.session_state["viewport_gom_wells"] = _drilled_gom
+                        else:
+                            st.session_state["viewport_gom_wells"] = []
+
+                        # Tell the map to fit to the selection bounds.
+                        # No oneshot flag — this is a real drill, the fit
+                        # should persist until Clear or another drill.
                         st.session_state["_drawn_bounds"] = [
                             [_bbox_min_lat, _bbox_min_lon],
                             [_bbox_max_lat, _bbox_max_lon],
@@ -2425,9 +3112,15 @@ def run(engine=None):
                         st.session_state["selected_cells"] = []
                         st.session_state.pop("_last_grid_click", None)
 
+                        # Build a status message reflecting which sources fired
+                        _parts = []
+                        if _drilled_main:
+                            _parts.append(f"{len(_drilled_main):,} main")
+                        if _drilled_gom:
+                            _parts.append(f"{len(_drilled_gom):,} GOM")
                         st.success(
-                            f"📐 Loaded **{len(_drilled):,}** wells from "
-                            f"{_sel_n} cell(s). Grid hidden — toggle "
+                            f"📐 Loaded **{' + '.join(_parts)}** wells "
+                            f"from {_sel_n} cell(s). Grid hidden — toggle "
                             f"'Show grid' to select more."
                         )
                         st.rerun()
@@ -2443,7 +3136,8 @@ def run(engine=None):
                 # - restores grid visibility so user can start a fresh selection
                 # Does NOT touch the tray — that's separate, persistent across
                 # drills. Use 🗑 Clear Tray at the bottom of the page for that.
-                _has_wells  = bool(st.session_state.get("viewport_uwis"))
+                _has_wells  = bool(st.session_state.get("viewport_uwis")) or \
+                              bool(st.session_state.get("viewport_gom_wells"))
                 _has_drawn  = bool(st.session_state.get("processed_drawings"))
                 _clear_disabled = not (_sel_n or _has_wells or _has_drawn)
                 if st.button(
@@ -2456,8 +3150,9 @@ def run(engine=None):
                     # Cell-selection buffer
                     st.session_state["selected_cells"] = []
                     st.session_state.pop("_last_grid_click", None)
-                    # Drilled wells viewport
+                    # Drilled wells viewport — both sources
                     st.session_state["viewport_uwis"] = []
+                    st.session_state["viewport_gom_wells"] = []
                     # Drawn shapes — clearing the dedupe set lets the same
                     # circle be redrawn from scratch (Leaflet.Draw itself
                     # keeps its drawn layers until user uses the trash icon
@@ -2553,11 +3248,18 @@ def run(engine=None):
                 lat0  = dff["lat"].mean()
                 lon0  = dff["lon"].mean()
                 zoom0 = 7
-            else:
-                # Wells NOT loaded yet (lazy-load, grid mode). Center on the
-                # grid data instead — it's cheap and tells us where the
-                # actual data lives. Fall back to a US center only if even
-                # the grid query fails.
+            elif active_area["id"] == "none":
+                # No area selected — show a neutral default view. Don't
+                # query dv_well for a centroid; with no area picked, the
+                # user hasn't said "I want to see anything specific,"
+                # so we shouldn't auto-zoom into wherever the legacy
+                # dv_well data happens to live. Zoom 3 gives a comfortable
+                # USA-wide view that fits typical screens better than 4.
+                lat0, lon0, zoom0 = 39.0, -98.0, 3   # US centroid
+            elif "main" in active_area.get("sources", []):
+                # An area that uses the main dv_well source IS selected.
+                # Use the dv_well centroid as the initial view (cheap
+                # aggregation query, falls back to US center on failure).
                 try:
                     _center_grid = _qry_well_grid(engine, step=0.035)
                     if not _center_grid.empty:
@@ -2565,9 +3267,16 @@ def run(engine=None):
                         lon0 = float(_center_grid["center_lon"].mean())
                         zoom0 = 7
                     else:
-                        lat0, lon0, zoom0 = 39.0, -98.0, 4  # US centroid
+                        lat0, lon0, zoom0 = 39.0, -98.0, 4
                 except Exception:
-                    lat0, lon0, zoom0 = 39.0, -98.0, 4  # US centroid
+                    lat0, lon0, zoom0 = 39.0, -98.0, 4
+            else:
+                # An area is selected that doesn't include "main" (e.g. GOM).
+                # Use that area's registered center as the fallback. The
+                # auto-zoom code normally handles this via _drawn_bounds,
+                # but if that hasn't fired yet, fall back to AREAS center.
+                _clat, _clon, _czoom = active_area["center"]
+                lat0, lon0, zoom0 = float(_clat), float(_clon), int(_czoom)
 
         # Build map — show progress so user knows it's working
         _msg = st.empty()
@@ -2585,6 +3294,17 @@ def run(engine=None):
         # the initial location/zoom_start with proper bbox-based zoom).
         if _viewport_bounds is not None:
             m.fit_bounds(_viewport_bounds)
+
+        # Consume one-shot _drawn_bounds. The area-change auto-zoom sets
+        # _drawn_bounds_oneshot=True so the bounds fit the map ONCE on
+        # area selection, then we drop them. Without this pop, every
+        # subsequent rerun (cell clicks, layer toggles, etc.) would
+        # re-fit the view, destroying any manual zoom the user did to
+        # pick a specific cell. Drills (cell-Commit, circle) set
+        # _drawn_bounds WITHOUT the oneshot flag, so they persist.
+        if st.session_state.get("_drawn_bounds_oneshot"):
+            st.session_state.pop("_drawn_bounds", None)
+            st.session_state.pop("_drawn_bounds_oneshot", None)
 
         if bm.get("overlay"):
             folium.TileLayer(
@@ -2606,7 +3326,15 @@ def run(engine=None):
             # basemap + any drilled wells. This is the workflow for "I
             # already drilled, now I want to see just the wells without
             # the heatmap underneath."
-            if st.session_state.get("grid_visible", True):
+            # ALSO: gate on the Area selector. The main grid reads from
+            # dataview.dv_well, which currently holds the legacy KGS data.
+            # The Area registry tags this source as "main". If the selected
+            # area doesn't include "main", skip rendering the main grid.
+            _show_main_grid = (
+                st.session_state.get("grid_visible", True)
+                and "main" in active_area.get("sources", [])
+            )
+            if _show_main_grid:
                 _msg.info(f"🔵 Loading grid overview…")
                 try:
                     _grid_df = _qry_well_grid(engine, step=0.035)
@@ -2709,6 +3437,33 @@ def run(engine=None):
         if "db_seismic_3d" in active_db:
             _msg.info("🟦 Loading 3D seismic surveys…")
             _add_seismic_3d(m, _qry_seismic_3d(engine))
+
+        # GOM wells render gated on the Area selector. Driven by
+        # active_area["sources"] which is populated from the AREAS registry
+        # at the top of the page. "gom" in sources → render the GOM grid.
+        # Pass the same selected_cells set used by the dv_well grid — the
+        # selection buffer is shared across area sources. Commit drill
+        # dispatches the actual bbox query based on active_area sources.
+        if "gom" in active_area.get("sources", []):
+            _msg.info("🛢 Loading GOM wells grid…")
+            _sel_gom = st.session_state.get("selected_cells", [])
+            _sel_gom_keys = {f"{c[0]:.4f}|{c[1]:.4f}" for c in _sel_gom}
+            _add_gom_well_grid(
+                m, _qry_gom_well_grid(engine),
+                step=0.072,
+                selected_set=_sel_gom_keys,
+            )
+
+        # Phase 4: render individual GOM well markers after a Commit drill.
+        # The Commit handler stashes drilled wells in viewport_gom_wells;
+        # _add_gom_wells_markers renders them as amber-ring teal-fill
+        # CircleMarkers with popups built by _build_gom_popup_html.
+        # Independent of the grid layer — drilled markers can show alongside
+        # OR without the grid heatmap depending on Show grid toggle state.
+        _gom_drilled = st.session_state.get("viewport_gom_wells", [])
+        if _gom_drilled:
+            _msg.info(f"🛢 Rendering {len(_gom_drilled):,} drilled GOM wells…")
+            _add_gom_wells_markers(m, _gom_drilled)
 
         for lay in active_shp:
             _msg.info(f"🗂 Loading {lay.get('layer_name','layer')}…")
@@ -3039,16 +3794,17 @@ def run(engine=None):
         # else fall back to width=None which lets st_folium auto-size.
         # We subscribe ONLY to events we actually consume — fewer events means
         # fewer Streamlit reruns, which means fewer pan/zoom grey-outs.
-        #   last_object_clicked_popup: used for cell clicks (popup contains
-        #     GRID_CELL marker) and well clicks (popup contains UWI).
+        #   last_object_clicked: lat/lon of the clicked object. Used for GRID
+        #     CELL clicks — the handler floor-divides by step to identify
+        #     which cell. Cells have NO popups so this is the only click
+        #     signal for them.
+        #   last_object_clicked_popup: popup HTML/text. Used for well marker
+        #     clicks (popup contains UWI or well_id).
         #   all_drawings: used for circle draw → Haversine well drill.
-        # We do NOT subscribe to last_clicked or last_object_clicked because
-        # they fire on every mouse-down (including the initial click of any
-        # pan/zoom drag), forcing reruns that grey out the map mid-drag.
-        # We also do NOT subscribe to center/zoom — in this version of
-        # streamlit-folium, those trigger additional reruns AND don't reliably
-        # report back, so they neither preserve view nor avoid grey-outs.
+        # We do NOT subscribe to last_clicked (fires on every mouse-down).
+        # We also do NOT subscribe to center/zoom (unreliable + triggers reruns).
         _ret = [
+            "last_object_clicked",
             "last_object_clicked_popup",
             "all_drawings",
         ]
@@ -3234,32 +3990,61 @@ def run(engine=None):
                 except Exception as _e:
                     st.warning(f"Circle drill failed: {_e}")
 
-        # ── Parse clicked popup — grid cell OR well UWI ─────────────────
-        clicked = map_data.get("last_object_clicked_popup") if map_data else None
-        if clicked:
-            _clicked_str = str(clicked)
+        # ── Parse click — grid cell (coords) OR well UWI (popup) ────────
+        # Two distinct click sources:
+        #   1. last_object_clicked   → lat/lon of clicked element. Used for
+        #      grid cells (which have no popup). The handler floor-divides
+        #      the click coords by the active area's step to find the
+        #      cell, then toggles it in selected_cells.
+        #   2. last_object_clicked_popup → popup text. Used for well marker
+        #      clicks (popups contain UWI/well_id for tray pickup).
 
-            # First check: is this a GRID_CELL click? Toggle its selection.
-            # Format: GRID_CELL|min_lat|min_lon|step|count
-            _grid_match = re.search(
-                r"GRID_CELL\|(-?\d+\.\d+)\|(-?\d+\.\d+)\|(\d+\.\d+)\|(\d+)",
-                _clicked_str,
-            )
-            if _grid_match:
-                _gc_lat = float(_grid_match.group(1))
-                _gc_lon = float(_grid_match.group(2))
-                _gc_step = float(_grid_match.group(3))
-                _gc_count = int(_grid_match.group(4))
+        # Determine the step for the active area's grid (for cell hit-test)
+        _active_sources = active_area.get("sources", [])
+        # If active area has both main and gom, we need to know which grid
+        # the click landed in. Step values differ — main is 0.035°, gom
+        # is 0.072°. A click could be in either. We test against both and
+        # take the one whose floor-cell exists in the rendered grid data.
+        # For now: if only one source is active, use that step. If both
+        # are active, we'll test the click against both grids by hit-test.
+        _cell_steps = []
+        if "main" in _active_sources:
+            _cell_steps.append(("main", 0.035))
+        if "gom" in _active_sources:
+            _cell_steps.append(("gom", 0.072))
+
+        _coord_click = map_data.get("last_object_clicked") if map_data else None
+        _handled_as_cell = False
+
+        if _coord_click and _cell_steps and st.session_state.get("grid_visible", True):
+            try:
+                _click_lat = float(_coord_click.get("lat"))
+                _click_lon = float(_coord_click.get("lng"))
+            except (TypeError, ValueError, AttributeError):
+                _click_lat = _click_lon = None
+
+            if _click_lat is not None and _click_lon is not None:
+                # For each active grid source, compute the cell that contains
+                # this click. The "cell" is identified by its SW corner from
+                # floor-division. Same algorithm the grid query uses to bin.
+                # If multiple sources are active (All regions), we use the
+                # FINER grid since its cells are smaller — that maps cleanly
+                # to a single physical clicked rectangle.
+                _best_step = min(s[1] for s in _cell_steps)
+                _gc_lat = (_click_lat // _best_step) * _best_step
+                _gc_lon = (_click_lon // _best_step) * _best_step
+                _gc_sig = f"{_gc_lat:.4f}|{_gc_lon:.4f}"
 
                 # Dedupe: streamlit-folium keeps returning the same click
-                # data across reruns until something else is clicked.
+                # coordinates across reruns until something else is clicked.
                 # Without this guard we'd toggle on every rerun.
-                _gc_sig = f"{_gc_lat:.4f}|{_gc_lon:.4f}"
                 if st.session_state.get("_last_grid_click") != _gc_sig:
                     st.session_state["_last_grid_click"] = _gc_sig
 
                     # Toggle this cell in/out of the selection buffer.
-                    # The drill happens later when the user hits Commit.
+                    # We use a placeholder well count of 0 — the actual
+                    # count isn't needed here; Commit reads the cell bbox
+                    # from the (lat, lon) and queries fresh.
                     _sel = list(st.session_state.get("selected_cells", []))
                     _existing_idx = next(
                         (i for i, c in enumerate(_sel)
@@ -3269,49 +4054,55 @@ def run(engine=None):
                     if _existing_idx is not None:
                         _sel.pop(_existing_idx)
                     else:
-                        _sel.append((_gc_lat, _gc_lon, _gc_count))
+                        _sel.append((_gc_lat, _gc_lon, 0))
                     st.session_state["selected_cells"] = _sel
+                    _handled_as_cell = True
                     st.rerun()
 
-            # Otherwise: well UWI extraction (existing behavior)
-            else:
-                _uwi = None
-                # Primary: data-uwi attribute (works on older streamlit-folium
-                # that returns full popup HTML)
-                m2 = re.search(r'data-uwi="([^"]+)"', _clicked_str)
-                if m2:
-                    _uwi = m2.group(1).strip()
-                else:
-                    # Fallbacks: try several patterns for different popup formats
-                    # (older HTML-preserving vs newer text-only streamlit-folium)
-                    for pat in [
-                        # HTML-preserving: monospace span around UWI
-                        r"font-family:monospace[^>]*>([^<]+)<",
-                        # 14-digit UWI surrounded by whitespace (KS, TX RRC).
-                        # The popup title and UWI may be on the same line in
-                        # streamlit-folium's plain-text return, so we can't
-                        # require start/end of line.
-                        r"(?<!\d)(\d{14})(?!\d)",
-                        # 12-16 digit UWI, more permissive — only used if 14
-                        # didn't match (rare format variations).
-                        r"(?<!\d)(\d{12,16})(?!\d)",
-                        # Dashed UWI format (e.g., "15-009-00865-0000")
-                        r"(\d{2}-\d{3}-\d{5}-\d{2,4}(?:-\d{2})?)",
-                        # PPDM US-prefix format
-                        r"(US[0-9]{14})",
-                    ]:
-                        m2 = re.search(pat, _clicked_str)
-                        if m2:
-                            _uwi = m2.group(1).strip()
-                            break
+        # If the click wasn't a cell click, fall through to popup-based
+        # well marker handling.
+        clicked = map_data.get("last_object_clicked_popup") if map_data else None
+        if clicked and not _handled_as_cell:
+            _clicked_str = str(clicked)
 
-                if _uwi:
-                    # Click adds to tray only. Scout ticket is NOT auto-shown —
-                    # the user opens it explicitly from the tray UI when they
-                    # want it. This avoids spamming the user with a full ticket
-                    # render every time they tap a well to bookmark it.
-                    if _uwi not in st.session_state.clicked_uwis:
-                        st.session_state.clicked_uwis.append(_uwi)
+            # Well UWI extraction (existing behavior for marker popups)
+            _uwi = None
+            # Primary: data-uwi attribute (works on older streamlit-folium
+            # that returns full popup HTML)
+            m2 = re.search(r'data-uwi="([^"]+)"', _clicked_str)
+            if m2:
+                _uwi = m2.group(1).strip()
+            else:
+                # Fallbacks: try several patterns for different popup formats
+                # (older HTML-preserving vs newer text-only streamlit-folium)
+                for pat in [
+                    # HTML-preserving: monospace span around UWI
+                    r"font-family:monospace[^>]*>([^<]+)<",
+                    # 14-digit UWI surrounded by whitespace (KS, TX RRC).
+                    # The popup title and UWI may be on the same line in
+                    # streamlit-folium's plain-text return, so we can't
+                    # require start/end of line.
+                    r"(?<!\d)(\d{14})(?!\d)",
+                    # 12-16 digit UWI, more permissive — only used if 14
+                    # didn't match (rare format variations).
+                    r"(?<!\d)(\d{12,16})(?!\d)",
+                    # Dashed UWI format (e.g., "15-009-00865-0000")
+                    r"(\d{2}-\d{3}-\d{5}-\d{2,4}(?:-\d{2})?)",
+                    # PPDM US-prefix format
+                    r"(US[0-9]{14})",
+                ]:
+                    m2 = re.search(pat, _clicked_str)
+                    if m2:
+                        _uwi = m2.group(1).strip()
+                        break
+
+            if _uwi:
+                # Click adds to tray only. Scout ticket is NOT auto-shown —
+                # the user opens it explicitly from the tray UI when they
+                # want it. This avoids spamming the user with a full ticket
+                # render every time they tap a well to bookmark it.
+                if _uwi not in st.session_state.clicked_uwis:
+                    st.session_state.clicked_uwis.append(_uwi)
 
         # ── clicked well → add to tray only, no ticket panel ────────────
         scout_uwi = st.session_state.scout_uwi

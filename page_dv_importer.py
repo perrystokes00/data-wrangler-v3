@@ -324,43 +324,10 @@ def _run_pipeline(engine, file_path, df_sample, src_cols, col_map,
         timing["normalize"] = time.time() - t
         st.caption(f"  ✓ {norm.get('transforms',0)} transforms — {_fmt_t(timing['normalize'])}")
 
-        # Stage 5a — First validation pass (detects FK violations)
-        progress.progress(45, "🔍 Validating (pass 1)…")
+        # Stage 5 — Validate
+        progress.progress(50, "🔍 Validating…")
         t   = time.time()
         val = validate_stg(engine, stg, target_table, col_map)
-
-        # Stage 5b — Apply stored FK resolutions for violated columns only
-        fk_violations = [i for i in val.issues
-                         if i.get("rule") == "FK_VIOLATION"]
-        fk_resolutions = st.session_state.get("dvi_fk_resolutions", {})
-
-        if fk_violations and fk_resolutions:
-            # Only apply resolutions for columns that have violations
-            violated_cols = {i["ppdm_col"] for i in fk_violations}
-            targeted_res  = {
-                col: fk_resolutions[col]
-                for col in violated_cols
-                if col in fk_resolutions
-            }
-            if targeted_res:
-                progress.progress(50, "🔗 Applying FK resolutions…")
-                from dv_pipeline import apply_fk_resolutions_stg
-                fk_r = apply_fk_resolutions_stg(
-                    engine, stg, col_map, targeted_res)
-                _applied = fk_r.get("applied", 0)
-                _nulled  = fk_r.get("nulled", 0)
-                if _applied or _nulled:
-                    st.caption(
-                        f"  Stage 5b · FK resolutions applied: "
-                        f"{_applied} mapped · {_nulled} nulled"
-                    )
-                if fk_r.get("errors"):
-                    st.warning("FK resolution errors: " +
-                               "; ".join(fk_r["errors"][:3]))
-
-                # Stage 5c — Re-validate after resolutions
-                progress.progress(55, "🔍 Validating (pass 2)…")
-                val = validate_stg(engine, stg, target_table, col_map)
         st.session_state.dvi_validation = val
         timing["validate"] = time.time() - t
         st.caption(f"  ✓ {val.rows_checked:,} rows · "
@@ -453,7 +420,7 @@ def _run_promote(engine, stg, target_table, col_map, rules,
 # VALIDATION DISPLAY
 # =============================================================================
 
-def _show_validation(val, engine=None):
+def _show_validation(val):
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Rows",        f"{val.rows_checked:,}")
     c2.metric("✅ Clean",    f"{val.clean_count:,}")
@@ -485,135 +452,6 @@ def _show_validation(val, engine=None):
             )
     elif val.rows_checked > 0:
         st.success("✅ All rows passed — ready to promote")
-
-    # ── FK Violations — show and allow inline mapping ────────────────
-    if "dvi_fk_resolutions" not in st.session_state:
-        st.session_state["dvi_fk_resolutions"] = {}
-    fk_res = st.session_state["dvi_fk_resolutions"]
-
-    fk_violations = [i for i in val.issues
-                     if i.get("rule") == "FK_VIOLATION"]
-    if fk_violations:
-        st.markdown("---")
-        st.markdown("### ⚠️ FK Violations — map or null to resolve")
-        st.caption(
-            "Values below don't exist in the parent reference table. "
-            "Map them to a valid code or set to NULL. "
-            "Mappings are stored and applied automatically on every load."
-        )
-        for issue in fk_violations:
-            tgt_col    = issue["ppdm_col"]
-            src_col    = issue.get("src_col", tgt_col)
-            parent_tbl = issue.get("parent_table","")
-            parent_col = issue.get("parent_col","")
-            bad_vals   = issue.get("bad_values", [])
-
-            st.markdown(
-                f"**{tgt_col}** → `{parent_tbl}.{parent_col}` "
-                f"— {issue['count']} unknown value(s)"
-            )
-
-            # Get valid codes from parent table
-            try:
-                with engine.connect() as _con:
-                    valid_codes = [r[0] for r in _con.execute(
-                        text(f"SELECT DISTINCT [{parent_col}] "
-                             f"FROM [dataview].[{parent_tbl}] "
-                             f"WHERE [{parent_col}] IS NOT NULL "
-                             f"ORDER BY [{parent_col}]")
-                    ).fetchall()]
-            except Exception:
-                valid_codes = []
-
-            for vi, val_str in enumerate(bad_vals):
-                c1, c2, c3, c4 = st.columns([2, 2, 3, 1])
-                c1.code(str(val_str))
-                action = c2.radio(
-                    "Action",
-                    ["Map to", "Add to ref table", "Set NULL"],
-                    key=f"fk_act_{tgt_col}_{vi}",
-                    label_visibility="collapsed",
-                )
-                if action == "Map to":
-                    mapped = c3.selectbox(
-                        "Map to",
-                        valid_codes or ["— no valid codes —"],
-                        key=f"fk_map_{tgt_col}_{vi}",
-                        label_visibility="collapsed",
-                    )
-                    if c4.button("✓", key=f"fk_save_{tgt_col}_{vi}"):
-                        fk_res.setdefault(tgt_col, {})[str(val_str)] = mapped
-                        st.success(f"Stored: {tgt_col} '{val_str}' → '{mapped}'")
-                        st.rerun()
-                elif action == "Add to ref table":
-                    c3.caption(f"Will add `{val_str}` to `{parent_tbl}`")
-                    if c4.button("✓", key=f"fk_add_{tgt_col}_{vi}"):
-                        try:
-                            with engine.begin() as _con:
-                                _con.execute(text(f"""
-                                    IF NOT EXISTS (
-                                        SELECT 1 FROM [dataview].[{parent_tbl}]
-                                        WHERE [{parent_col}] = :v
-                                    )
-                                    INSERT INTO [dataview].[{parent_tbl}]
-                                        ([{parent_col}], short_name, long_name,
-                                         active_ind, source,
-                                         row_created_by, row_created_date)
-                                    VALUES
-                                        (:v, :v, :v,
-                                         'Y', 'IMPORT',
-                                         'DataWrangler', GETDATE())
-                                """), {"v": str(val_str)})
-                            st.success(
-                                f"Added `{val_str}` to `{parent_tbl}` — "
-                                f"value will pass FK check on next load."
-                            )
-                            st.rerun()
-                        except Exception as _ae:
-                            st.error(f"Add failed: {_ae}")
-                else:
-                    if c4.button("✓", key=f"fk_null_{tgt_col}_{vi}"):
-                        fk_res.setdefault(tgt_col, {})[str(val_str)] = None
-                        st.success(f"Stored: {tgt_col} '{val_str}' → NULL")
-                        st.rerun()
-
-    # ── Stored FK mappings ────────────────────────────────────────────
-    with st.expander("🔗 Stored FK mappings", expanded=bool(fk_res)):
-        st.caption(
-            "Applied automatically to staging before validation on every load."
-        )
-        if fk_res:
-            for tgt_col, mappings in list(fk_res.items()):
-                st.markdown(f"**{tgt_col}**")
-                for raw, resolved in list(mappings.items()):
-                    c1, c2, c3 = st.columns([3, 3, 1])
-                    c1.code(str(raw))
-                    c2.code(str(resolved) if resolved is not None else "NULL")
-                    if c3.button("✕", key=f"fk_del_{tgt_col}_{raw}"):
-                        del fk_res[tgt_col][raw]
-                        if not fk_res[tgt_col]:
-                            del fk_res[tgt_col]
-                        st.rerun()
-        else:
-            st.caption("No mappings stored yet.")
-
-        # Manual add
-        st.markdown("**Add mapping manually**")
-        a1, a2, a3, a4 = st.columns([2, 2, 2, 1])
-        new_tgt = a1.text_input("Column",
-            placeholder="well_status", key="fk_new_tgt",
-            label_visibility="collapsed")
-        new_raw = a2.text_input("Source value",
-            placeholder="PLUG", key="fk_new_raw",
-            label_visibility="collapsed")
-        new_res = a3.text_input("Map to (blank=NULL)",
-            placeholder="PLUGGED", key="fk_new_res",
-            label_visibility="collapsed")
-        if a4.button("➕", key="fk_add_btn"):
-            if new_tgt and new_raw:
-                fk_res.setdefault(new_tgt, {})[new_raw] = new_res or None
-                st.success(f"Stored: {new_tgt} '{new_raw}' → '{new_res or 'NULL'}'")
-                st.rerun()
 
 
 # =============================================================================
@@ -664,6 +502,21 @@ def render(engine=None):
     ]:
         if k not in st.session_state:
             st.session_state[k] = v
+
+    # ── Section 0: Bulk Region Loaders (GOM, etc.) ────────────────────
+    # Purpose-built bulk loaders for source-shaped data that doesn't go
+    # through the generic column-mapping workflow below. Add new region
+    # loaders here as they're built (Permian, KGS, BLM, RRC, etc.).
+    # Collapsed by default — the column-mapping workflow remains the
+    # primary path for ad-hoc CSV/Excel imports.
+    with st.expander("🌊 0 · Bulk Region Loaders", expanded=False):
+        try:
+            import page_import_gom
+            page_import_gom.render(engine)
+        except Exception as e:
+            st.error(f"GOM loader unavailable: {type(e).__name__}: {e}")
+
+    st.divider()
 
     # ── Section 1: Upload & Detect ────────────────────────────────────
     with st.expander("📁 1 · Upload & Detect", expanded=True):
@@ -781,28 +634,15 @@ def render(engine=None):
         valid_tgts  = set(tgt_options)
         orig_map    = {m["src"]: m for m in mapping}
 
-        def _conf_label(m):
-            if not m.get("target"):
-                return "⬜ skip"
-            if m.get("method") == "manual":
-                return "✏️ manual"
-            if m.get("method") == "corpus":
-                return "🔵 corpus"
-            conf = m.get("confidence", 0)
-            if conf >= CONF_AUTO:
-                return f"🟢 {conf:.0%}"
-            if conf >= CONF_MAYBE:
-                return f"🟡 {conf:.0%}"
-            return "⬜ skip"
-
         grid_df = pd.DataFrame([{
             "Source Column": m["src"],
             "Target Column": (m["target"] if m.get("target") in valid_tgts else "(skip)"),
-            "Confidence":    _conf_label(m),
+            "Confidence":    ("🔵 corpus"  if m.get("method") == "corpus" and m.get("target")
+                              else f"🟢 {m['confidence']:.0%}" if m["confidence"] >= CONF_AUTO and m.get("target")
+                              else f"🟡 {m['confidence']:.0%}" if m["confidence"] >= CONF_MAYBE and m.get("target")
+                              else "⬜ skip"),
         } for m in mapping])
 
-        # Grid key includes a version counter so edits aren't cached
-        _grid_ver = st.session_state.get("dvi_grid_ver", 0)
         edited_grid = st.data_editor(
             grid_df,
             column_config={
@@ -811,52 +651,21 @@ def render(engine=None):
                 "Confidence":    st.column_config.TextColumn(disabled=True, width="small"),
             },
             hide_index=True, use_container_width=True,
-            num_rows="fixed", key=f"dvi_grid_{_grid_ver}",
+            num_rows="fixed", key="dvi_grid",
         )
 
-        edited = []
-        _grid_changed = False
-        for _, row in edited_grid.iterrows():
-            src_col = row["Source Column"]
-            tgt_col = row["Target Column"]
-            orig    = orig_map.get(src_col, {})
-            is_skip = tgt_col == "(skip)" or not tgt_col
+        edited = [{
+            "src":        row["Source Column"],
+            "target":     row["Target Column"] if row["Target Column"] != "(skip)" else None,
+            "data_type":  _get_dtype(target_table, row["Target Column"])
+                          if row["Target Column"] != "(skip)" else "str",
+            "confidence": orig_map.get(row["Source Column"], {}).get("confidence", 0),
+            "method":     orig_map.get(row["Source Column"], {}).get("method", "keyword"),
+        } for _, row in edited_grid.iterrows()]
 
-            # Detect manual change: target now set but original was skip/none
-            orig_tgt = orig.get("target") or "(skip)"
-            was_skip = orig_tgt == "(skip)" or not orig.get("target")
-            manually_set = not is_skip and was_skip
-
-            if manually_set:
-                _grid_changed = True
-
-            edited.append({
-                "src":        src_col,
-                "target":     tgt_col if not is_skip else None,
-                "data_type":  _get_dtype(target_table, tgt_col) if not is_skip else "str",
-                "confidence": 1.0 if manually_set else orig.get("confidence", 0),
-                "method":     "manual" if manually_set else orig.get("method", "keyword"),
-            })
-
-        # If user manually changed targets, save and rerun so
-        # Confidence labels update on next render
-        if _grid_changed:
-            st.session_state.dvi_mapping = edited
-            st.session_state["dvi_grid_ver"] = st.session_state.get("dvi_grid_ver", 0) + 1
-            st.rerun()
-
-        c1, c2, c3 = st.columns([2, 2, 1])
+        c1, c2 = st.columns(2)
         c1.metric("🟢 Mapped",  sum(1 for m in edited if m["target"]))
         c2.metric("⬜ Skipped", sum(1 for m in edited if not m["target"]))
-
-        # Save edited mapping back to session state
-        if c3.button("✅ Apply", key="dvi_apply_map",
-                     use_container_width=True,
-                     help="Save mapping changes"):
-            st.session_state.dvi_mapping = edited
-            # Bump grid version so next render reads fresh
-            st.session_state["dvi_grid_ver"] = _grid_ver + 1
-            st.rerun()
 
         st.markdown("---")
         rc1, rc2 = st.columns([3, 1])
@@ -954,7 +763,7 @@ def render(engine=None):
     stg = st.session_state.get("dvi_stg_table")
 
     if val and stg:
-        _show_validation(val, engine=engine)
+        _show_validation(val)
 
         if not (auto_promote and val.error_count == 0):
             st.markdown("---")
