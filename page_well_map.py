@@ -3183,17 +3183,14 @@ def run(engine=None):
                         ]
 
                         # Hide the grid — user wants to see the wells now.
-                        # Set the internal grid_visible flag, then POP the
-                        # widget's session_state key so the toggle widget
-                        # re-initializes from its `value=` on next render.
-                        # Streamlit forbids writing a widget's key AFTER
-                        # the widget has been instantiated in the same
-                        # script run (which it was, at the top of run()).
-                        # Popping the key sidesteps that restriction —
-                        # the next render reads the new grid_visible
-                        # value and initializes the widget cleanly.
+                        # MUST update BOTH the internal grid_visible flag
+                        # AND the widget's session_state key. Otherwise the
+                        # toggle UI shows ON while the render state says OFF,
+                        # and the next user toggle click does nothing because
+                        # the widget thinks it's already in the user's chosen
+                        # state.
                         st.session_state["grid_visible"] = False
-                        st.session_state.pop("grid_visible_toggle", None)
+                        st.session_state["grid_visible_toggle"] = False
 
                         # Clear the selection buffer — drill done
                         st.session_state["selected_cells"] = []
@@ -3249,10 +3246,9 @@ def run(engine=None):
                     # the default/centroid view, not the last drilled area
                     st.session_state.pop("_drawn_bounds", None)
                     # Bring the grid back so the user can pick again.
-                    # Set grid_visible, pop the widget key — same pattern
-                    # as Commit handler (see comment there for why).
+                    # Update BOTH keys (see Commit handler comment for why).
                     st.session_state["grid_visible"] = True
-                    st.session_state.pop("grid_visible_toggle", None)
+                    st.session_state["grid_visible_toggle"] = True
                     # Signal the view-persist JS to wipe its sessionStorage
                     # entry on the next render. Otherwise Clear would land
                     # the map back on the last-viewed area, not the default.
@@ -3544,21 +3540,13 @@ def run(engine=None):
             _msg.info("🟦 Loading 3D seismic surveys…")
             _add_seismic_3d(m, _qry_seismic_3d(engine))
 
-        # GOM wells render gated on the Area selector AND the grid-visible
-        # toggle. "gom" in sources comes from the AREAS registry at the
-        # top of the page. grid_visible follows the Show grid toggle and
-        # is set False by Commit/Circle drill so the user can see drilled
-        # wells without the heatmap underneath.
-        # IMPORTANT: combining the GOM grid (60-80 cells) WITH drilled
-        # GOM wells (potentially 300+ CircleMarkers) is what was freezing
-        # st_folium render — too much SVG for the iframe to serialize
-        # quickly. Honoring grid_visible here keeps the map light after
-        # a drill, matching the West Texas behavior.
-        _show_gom_grid = (
-            "gom" in active_area.get("sources", [])
-            and st.session_state.get("grid_visible", True)
-        )
-        if _show_gom_grid:
+        # GOM wells render gated on the Area selector. Driven by
+        # active_area["sources"] which is populated from the AREAS registry
+        # at the top of the page. "gom" in sources → render the GOM grid.
+        # Pass the same selected_cells set used by the dv_well grid — the
+        # selection buffer is shared across area sources. Commit drill
+        # dispatches the actual bbox query based on active_area sources.
+        if "gom" in active_area.get("sources", []):
             _msg.info("🛢 Loading GOM wells grid…")
             try:
                 _phase(15, "🛢 Querying Gulf of America wells — typically 15-20 seconds…")
@@ -3946,19 +3934,34 @@ def run(engine=None):
         # That's the part the user actually waits for (10-30 sec depending
         # on map complexity). Keep the top-of-page progress visible
         # THROUGH this call so the user knows it's still working.
+        # Force widget re-render when selection changes.
+        # Without this, streamlit-folium preserves the iframe across reruns
+        # when only the map's content changes, and selected-cell highlights
+        # (blue border) don't appear until something else forces a rebuild.
+        # By appending a hash of selected_cells to the widget key, every
+        # selection-state change creates a "new" widget instance that
+        # streamlit-folium re-serializes from scratch — picking up the
+        # updated cell borders. View-persist JS uses sessionStorage so
+        # pan/zoom survives key changes.
+        _sel_for_key = st.session_state.get("selected_cells", [])
+        _sel_key_hash = hash(tuple(sorted(
+            f"{c[0]:.4f}|{c[1]:.4f}" for c in _sel_for_key
+        )))
+        _map_widget_key = f"well_map_folium_{_sel_key_hash}"
+
         _phase(90, "🌐 Rendering map in browser…")
         try:
             map_data = st_folium(
                 m, height=500, use_container_width=True,
                 returned_objects=_ret,
-                key="well_map_folium",
+                key=_map_widget_key,
             )
         except TypeError:
             # Older streamlit-folium that doesn't support use_container_width
             map_data = st_folium(
                 m, width=None, height=500,
                 returned_objects=_ret,
-                key="well_map_folium",
+                key=_map_widget_key,
             )
         _phase(100)
         _msg.empty()
@@ -4117,8 +4120,9 @@ def run(engine=None):
                         # Hide the grid — same as cell Commit. User sees the
                         # drilled wells without heatmap clutter. Toggle 'Show
                         # grid' to bring it back for another selection.
+                        # Update BOTH keys for widget/state sync.
                         st.session_state["grid_visible"] = False
-                        st.session_state.pop("grid_visible_toggle", None)
+                        st.session_state["grid_visible_toggle"] = False
 
                         st.success(
                             f"⭕ Loaded **{len(_circle_wells):,}** wells "
@@ -4365,7 +4369,7 @@ def run(engine=None):
                         # bring the grid back so the user can pick again
                         st.session_state["selected_cells"] = []
                         st.session_state["grid_visible"] = True
-                        st.session_state.pop("grid_visible_toggle", None)
+                        st.session_state["grid_visible_toggle"] = True
                         st.rerun()
 
 
