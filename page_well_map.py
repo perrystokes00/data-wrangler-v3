@@ -30,6 +30,30 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+# BOEM OCS area-code → friendly-name lookup for the GOM Zoom-To dropdown.
+# Falls back to a passthrough if the module isn't present, so the page
+# still works (just shows bare codes) if boem_area_codes.py is missing.
+try:
+    from boem_area_codes import area_name as _boem_area_name
+except ImportError:
+    def _boem_area_name(code):
+        return str(code).strip().upper() if code else ""
+
+# BOEM well status_code → friendly-label lookup for the GOM status
+# filter checkboxes. Same passthrough-fallback pattern: if the module
+# is missing, checkboxes just show raw codes. status_color gives each
+# status a fixed marker color; falls back to neutral slate if missing.
+try:
+    from boem_status_codes import (
+        status_label as _boem_status_label,
+        status_color as _boem_status_color,
+    )
+except ImportError:
+    def _boem_status_label(code):
+        return str(code).strip().upper() if code else ""
+    def _boem_status_color(code):
+        return "#94a3b8"
+
 try:
     import folium
     from streamlit_folium import st_folium
@@ -152,6 +176,12 @@ DB_LAYERS = [
 #                 yet). Disabled entries still appear in the dropdown so
 #                 the user sees what's coming, but selecting them does
 #                 nothing beyond rendering "All regions" fallback.
+#   queries     — which Query-dropdown options are valid for this area's
+#                 schema. The keys correspond to QUERIES values. dv_well
+#                 (main) supports the full set; dataview_gom.well only has
+#                 the columns for a subset, so GOM gets a shorter list.
+#                 Keeping a broken option OUT of the dropdown is clearer
+#                 than showing it and silently returning nothing.
 #
 # Future: replace the hardcoded list with a dynamic discovery query that
 # enumerates dataview_<region> schemas. For tonight, hardcoded is fine.
@@ -161,22 +191,36 @@ AREAS = [
     # grey-out + spinner on first page open from auto-firing the grid
     # aggregation queries.
     {"label": "— Select area —",    "id": "none",       "sources": [],
-     "center": (39.0, -98.0, 3),   "enabled": True},
+     "center": (39.0, -98.0, 3),   "enabled": True,
+     "queries": ["all"]},
     {"label": "🌎 All regions",     "id": "all",        "sources": ["main", "gom"],
-     "center": (39.0, -98.0, 3),   "enabled": True},
+     "center": (39.0, -98.0, 3),   "enabled": True,
+     "queries": ["all", "operator", "field", "county", "well_type",
+                 "has_tops", "has_prod", "has_dst", "has_survey",
+                 "has_core", "has_petro"]},
     {"label": "🌊 Gulf of America", "id": "gom",        "sources": ["gom"],
-     "center": (27.5, -90.0, 6),   "enabled": True},
+     "center": (27.5, -90.0, 6),   "enabled": True,
+     # GOM (dataview_gom.well) has operator (company_name) and well type
+     # (type_code) columns. It does NOT have field/county or the
+     # aux-table joins (formation tops, production, DST, etc.) that the
+     # "has_*" queries depend on — those tables don't exist for GOM yet.
+     "queries": ["all", "operator", "well_type"]},
     # West Texas — currently held in dataview.dv_well. The "main" source
     # tag means this area renders via the existing _qry_well_grid path.
     # When we migrate dv_well to its own per-region schema later, switch
     # the source tag to that schema's identifier.
     {"label": "🏜 West Texas",      "id": "west_texas", "sources": ["main"],
-     "center": (32.0, -102.5, 6),  "enabled": True},
+     "center": (32.0, -102.5, 6),  "enabled": True,
+     "queries": ["all", "operator", "field", "county", "well_type",
+                 "has_tops", "has_prod", "has_dst", "has_survey",
+                 "has_core", "has_petro"]},
     # Disabled placeholders — visible in dropdown but no data yet
     {"label": "🌾 Kansas",          "id": "kansas",     "sources": [],
-     "center": (38.5, -98.0, 7),   "enabled": False},
+     "center": (38.5, -98.0, 7),   "enabled": False,
+     "queries": ["all"]},
     {"label": "🌲 Bakken",          "id": "bakken",     "sources": [],
-     "center": (48.0, -103.0, 7),  "enabled": False},
+     "center": (48.0, -103.0, 7),  "enabled": False,
+     "queries": ["all"]},
 ]
 
 
@@ -200,6 +244,9 @@ def _qry_wells(_engine) -> list[dict]:
     """
     Returns wells as a list of dicts via FOR JSON PATH.
     SQL Server does the joins and JSON serialization — no pandas, no Python loops.
+
+    This is the dv_well (main / West Texas) variant. For GOM, see
+    _qry_gom_wells — the Wells-mode loader dispatches on active_area.
     """
     sql = """
         SELECT w.uwi, w.well_name, w.well_type, w.well_status,
@@ -233,8 +280,89 @@ def _qry_wells(_engine) -> list[dict]:
         return []
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def _qry_counts(_engine) -> pd.DataFrame:
+def _qry_gom_wells(_engine) -> list[dict]:
+    """
+    GOM (dataview_gom.well) variant of _qry_wells.
+
+    Returns the same dict shape as _qry_wells so all downstream code —
+    the wells_df DataFrame, the operator/well_type filter dropdowns,
+    the map markers — works unchanged. GOM columns are aliased to the
+    dv_well names the rest of the page expects:
+
+        well_id          → uwi          (GOM PK, a uniqueidentifier)
+        company_name     → operator_name
+        type_code        → well_type
+        status_code      → well_status
+        bh_total_md_ft   → final_td
+        api_well_number  → api_num
+
+    GOM has no field/county, so field_name is set to the area code as a
+    reasonable stand-in and county/province_state come back blank. The
+    "By field"/"By county" query options are not whitelisted for GOM
+    anyway (see AREAS), so nothing downstream tries to filter on them.
+    """
+    sql = """
+        SELECT CONVERT(VARCHAR(36), w.well_id) AS uwi,
+               w.well_name,
+               ISNULL(w.type_code,   'Unknown') AS well_type,
+               ISNULL(w.status_code, 'Unknown') AS well_status,
+               w.surface_latitude  AS lat,
+               w.surface_longitude AS lon,
+               CAST('' AS NVARCHAR(40))  AS county,
+               w.region                 AS province_state,
+               w.api_well_number         AS api_num,
+               CONVERT(VARCHAR(10), w.spud_date,        120) AS spud_date,
+               CONVERT(VARCHAR(10), w.total_depth_date, 120) AS completion_date,
+               w.bh_total_md_ft          AS final_td,
+               w.rkb_ft                  AS depth_datum,
+               CAST(NULL AS INT)         AS operator_ba_id,
+               CAST(NULL AS INT)         AS field_id,
+               ISNULL(w.company_name, 'Unknown')      AS operator_name,
+               ISNULL(w.bottom_area_code, 'Unknown')  AS field_name
+        FROM dataview_gom.well w
+        WHERE w.surface_latitude  IS NOT NULL
+          AND w.surface_longitude IS NOT NULL
+        ORDER BY w.well_name
+        FOR JSON PATH
+    """
+    try:
+        with _engine.connect().execution_options(timeout=30) as con:
+            rows = con.execute(text(sql)).fetchall()
+            if not rows:
+                return []
+            json_str = "".join(r[0] for r in rows)
+            return json.loads(json_str)
+    except Exception as exc:
+        st.error(f"GOM wells query failed: {exc}")
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _qry_gom_status_codes(_engine) -> list[str]:
+    """
+    Distinct status_code values present in dataview_gom.well, ordered by
+    well count descending. Cheap — it's a GROUP BY on one indexed column,
+    no row payload — so the status sidebar can populate from the real
+    schema without paying the cost of loading the full wells list.
+
+    Returns a list of raw BOEM status codes, e.g. ["PA","ST","COM",...].
+    Falls back to an empty list on error; the caller handles that.
+    """
+    try:
+        with _engine.connect().execution_options(timeout=8) as con:
+            rows = con.execute(text("""
+                SELECT status_code, COUNT(*) AS n
+                FROM dataview_gom.well
+                WHERE status_code IS NOT NULL
+                  AND LTRIM(RTRIM(status_code)) <> ''
+                GROUP BY status_code
+                ORDER BY COUNT(*) DESC
+            """)).fetchall()
+            return [str(r[0]).strip() for r in rows]
+    except Exception:
+        return []
+
+
     """Sub-data counts per well — cached, with timeout."""
     try:
         with _engine.connect().execution_options(timeout=10) as con:
@@ -897,6 +1025,10 @@ def _qry_zoom_targets(_engine) -> list[dict]:
     """
     Build a list of named locations for zoom-to selectbox.
     Includes: counties (from dv_well locations), fields, basins.
+
+    This is the dv_well / main-source variant. For GOM, see
+    _qry_gom_zoom_targets — the Zoom-To widget dispatches on the
+    active Area.
     """
     targets = [{"label": "— Zoom to location —",
                 "lat": None, "lon": None, "zoom": 7}]
@@ -945,6 +1077,56 @@ def _qry_zoom_targets(_engine) -> list[dict]:
                 })
             # Individual wells omitted from dropdown — too many items causes hang
             # Use the scout ticket panel to navigate to individual wells
+    except Exception:
+        pass
+    return targets
+
+
+def _qry_gom_zoom_targets(_engine) -> list[dict]:
+    """
+    Build the Zoom-To list for the Gulf of America area.
+
+    GOM has no fields/basins/counties in the dv_well sense. The natural
+    navigation unit offshore is the BOEM OCS protraction area
+    (Mississippi Canyon, Green Canyon, etc.), identified by
+    bottom_area_code in dataview_gom.well. Each entry's centroid is the
+    average surface coordinate of all wells in that area code.
+
+    Ordered by well count descending so the most-drilled areas are at
+    the top of the dropdown — that's where the user most likely wants
+    to go.
+    """
+    targets = [{"label": "— Zoom to location —",
+                "lat": None, "lon": None, "zoom": 6}]
+    try:
+        with _engine.connect().execution_options(timeout=8) as con:
+            rows = con.execute(text("""
+                SELECT bottom_area_code,
+                       AVG(surface_latitude)  AS lat,
+                       AVG(surface_longitude) AS lon,
+                       COUNT(*)               AS n
+                FROM dataview_gom.well
+                WHERE surface_latitude IS NOT NULL
+                  AND surface_longitude IS NOT NULL
+                  AND bottom_area_code IS NOT NULL
+                  AND LTRIM(RTRIM(bottom_area_code)) <> ''
+                GROUP BY bottom_area_code
+                ORDER BY COUNT(*) DESC
+            """)).fetchall()
+            for r in rows:
+                _code = str(r[0]).strip()
+                _n    = int(r[3])
+                _name = _boem_area_name(_code)
+                # Show "Garden Banks (GB)" when we have a friendly name,
+                # or just the code if the lookup doesn't cover it.
+                _disp = f"{_name} ({_code})" if _name != _code else _code
+                targets.append({
+                    "label": f"🌊 {_disp} · {_n:,} wells",
+                    "lat": float(r[1]), "lon": float(r[2]),
+                    # Area codes cover a roughly consistent-size region;
+                    # zoom 9 frames one comfortably without losing context.
+                    "zoom": 9,
+                })
     except Exception:
         pass
     return targets
@@ -1418,9 +1600,12 @@ def _add_gom_wells_markers(m, wells: list[dict]) -> int:
     """
     Render individual clickable CircleMarkers for drilled GOM wells.
 
-    Called after a cell-Commit or circle-drill against GOM. Each marker is
-    a teal circle with a yellow ring (mirrors dv_well's viewport-select
-    visual style — yellow ring signals "drilled / interactive").
+    Called after a cell-Commit or circle-drill against GOM. Each marker
+    is a circle filled with its status color (see BOEM_STATUS_COLORS)
+    and an amber ring — the ring is the constant "drilled / interactive"
+    cue, the fill tells you the well's status at a glance. The sidebar
+    status checkboxes carry matching color swatches, so the sidebar
+    doubles as the map legend.
 
     The popup uses _build_gom_popup_html which embeds data-well-id (the
     GOM UUID) so the click handler can identify which well was clicked.
@@ -1452,13 +1637,18 @@ def _add_gom_wells_markers(m, wells: list[dict]) -> int:
         popup_html = _build_gom_popup_html(w)
         title      = w.get("well_name") or w.get("api_well_number") or "—"
 
+        # Fill color is driven by the well's BOEM status_code. Unknown
+        # or missing codes fall back to neutral slate inside
+        # _boem_status_color.
+        _fill = _boem_status_color(w.get("status_code", ""))
+
         folium.CircleMarker(
             location=[lat, lon],
             radius=6,
             color="#fbbf24",       # amber/gold ring — drilled marker
             weight=2,
             fill=True,
-            fill_color="#0f766e",  # deep teal fill — matches GOM grid palette
+            fill_color=_fill,      # status color — see BOEM_STATUS_COLORS
             fill_opacity=0.9,
             opacity=1,
             popup=folium.Popup(popup_html, max_width=320),
@@ -2534,12 +2724,29 @@ def run(engine=None):
         #   40–80% during JSON parse
         #   80–100% during pandas conversion + cache write
         # If the query takes longer than expected, we hold at 80% until done.
+        #
+        # Schema dispatch: the Area selector (top4) renders AFTER this
+        # loader, so active_area isn't set yet. Read the user's last area
+        # choice from session state — same lookahead pattern Zoom-To and
+        # the Query whitelist use. A GOM-only area loads from
+        # dataview_gom.well; everything else uses the dv_well path.
+        _wells_area_label = st.session_state.get("wm_area_sel")
+        _wells_area = next(
+            (a for a in AREAS if a["label"] == _wells_area_label),
+            AREAS[0],
+        )
+        _wells_srcs = _wells_area.get("sources", [])
+        _use_gom_wells = ("gom" in _wells_srcs and "main" not in _wells_srcs)
+
         _prog_msg = _status.empty()
         _prog_bar = st.progress(0)
         _prog_msg.info("⏳ Loading wells from DataView — this takes ~20-30 seconds…")
         try:
             _prog_bar.progress(10)
-            _wells_raw = _qry_wells(engine)
+            if _use_gom_wells:
+                _wells_raw = _qry_gom_wells(engine)
+            else:
+                _wells_raw = _qry_wells(engine)
             _prog_bar.progress(80)
             _prog_msg.info(f"⏳ Processing {len(_wells_raw):,} wells…")
             st.session_state["_wells_already_loaded"] = True
@@ -2592,23 +2799,74 @@ def run(engine=None):
         if _u not in uwi_index:
             uwi_index[_u] = _w
 
+    # ── Resolve the active Area BEFORE rendering the top bar ──────────
+    # The Area selector widget lives in top4 (rightmost column), but the
+    # Zoom-To (top2) and Query (top3) dropdowns need to know the active
+    # area to build their options. Streamlit renders columns in code
+    # order, so top2/top3 would otherwise see a stale wm_area_sel from
+    # the previous run — that's the "Query only shows All wells" bug.
+    #
+    # Fix: resolve active_area here, up front, from the session-state
+    # value the Area widget wrote on the LAST run. On the run where the
+    # user changes the area, the widget in top4 updates wm_area_sel, and
+    # because the widget key is bound, st.session_state["wm_area_sel"]
+    # already reflects the NEW selection by the time this code runs on
+    # the NEXT script execution. The Area widget in top4 still renders
+    # and drives the selection; this block just reads the current value
+    # early so every dropdown in the top bar agrees within one run.
+    _area_labels_display = [
+        (a["label"] if a["enabled"] else f"{a['label']} (no data)")
+        for a in AREAS
+    ]
+    _area_sel_current = st.session_state.get("wm_area_sel",
+                                             _area_labels_display[0])
+    try:
+        _active_idx = _area_labels_display.index(_area_sel_current)
+    except ValueError:
+        _active_idx = 0
+    active_area = AREAS[_active_idx]
+
     # ── Top bar above map: Background | Zoom | Query | Area ────────────
     top1, top2, top3, top4 = st.columns([1, 1, 2, 1])
     with top1:
         basemap = st.selectbox("🖼 Background", list(BASEMAPS.keys()),
                                index=0, key="wm_basemap")
     with top2:
+        # Zoom-To options depend on the active Area, resolved above.
+        _zt_sources = active_area.get("sources", [])
         try:
-            zoom_targets = _qry_zoom_targets(engine)
+            if "gom" in _zt_sources and "main" not in _zt_sources:
+                # GOM-only area → OCS protraction-area targets
+                zoom_targets = _qry_gom_zoom_targets(engine)
+            elif "main" in _zt_sources:
+                # West Texas / All regions → dv_well fields/basins/counties.
+                # (All-regions uses the main targets; GOM area-code targets
+                # would bloat the list. Good enough — refine later if needed.)
+                zoom_targets = _qry_zoom_targets(engine)
+            else:
+                # No area selected (placeholder) — nothing to zoom to yet
+                zoom_targets = [{"label": "— Zoom to location —",
+                                 "lat": None, "lon": None, "zoom": 6}]
         except Exception:
-            zoom_targets = [{"label":"— Zoom to location —",
-                             "lat":None,"lon":None,"zoom":7}]
-        zoom_sel    = st.selectbox("🔍 Zoom to",
-                                   [t["label"] for t in zoom_targets],
+            zoom_targets = [{"label": "— Zoom to location —",
+                             "lat": None, "lon": None, "zoom": 7}]
+
+        # If the previously-selected zoom target isn't in the new list
+        # (area changed), reset to the placeholder. Pop the widget key so
+        # the selectbox re-inits from index 0 without an illegal write.
+        _zt_labels = [t["label"] for t in zoom_targets]
+        _prev_zt = st.session_state.get("wm_zoom_target")
+        if _prev_zt and _prev_zt not in _zt_labels:
+            st.session_state.pop("wm_zoom_target", None)
+
+        zoom_sel    = st.selectbox("🔍 Zoom to", _zt_labels,
                                    index=0, key="wm_zoom_target")
         zoom_target = next((t for t in zoom_targets
                             if t["label"]==zoom_sel), None)
     with top3:
+        # Master list of every query type the page knows how to run.
+        # label → qtype-key. Each AREAS entry's "queries" list says which
+        # of these keys are valid for that area's schema.
         QUERIES = {
             "All wells":None,"By operator":"operator","By field":"field",
             "By county":"county","By well type":"well_type",
@@ -2616,7 +2874,38 @@ def run(engine=None):
             "Has DST":"has_dst","Has directional survey":"has_survey",
             "Has core data":"has_core","Has petro interpretation":"has_petro",
         }
-        qsel   = st.selectbox("📋 Query", list(QUERIES.keys()),
+        # Map qtype-key → label so we can go from a whitelist entry back
+        # to its display label. "all" is the key for the None ("All
+        # wells") option.
+        _qkey_to_label = {("all" if v is None else v): k
+                          for k, v in QUERIES.items()}
+
+        # The active area was resolved up front (before the top columns).
+        # Use it directly — no stale-lookahead needed. active_area's
+        # "queries" list is the whitelist of valid query-type keys for
+        # that area's schema.
+        _allowed_qkeys = active_area.get("queries", ["all"])
+        # Build the visible options in QUERIES order, keeping only the
+        # ones whitelisted for this area.
+        _query_labels = [
+            _qkey_to_label[k] for k in
+            ["all","operator","field","county","well_type",
+             "has_tops","has_prod","has_dst","has_survey",
+             "has_core","has_petro"]
+            if k in _allowed_qkeys and k in _qkey_to_label
+        ]
+
+        # If the previously-selected query isn't valid for the new area
+        # (e.g. user had "By field" selected, then switched to GOM which
+        # doesn't offer it), drop the stale selection so the selectbox
+        # falls back to the first option. Pop rather than assign — you
+        # can't set a widget's state key after it's instantiated, but
+        # popping it before instantiation is fine.
+        _prev_qsel = st.session_state.get("wm_query_sel")
+        if _prev_qsel is not None and _prev_qsel not in _query_labels:
+            st.session_state.pop("wm_query_sel", None)
+
+        qsel   = st.selectbox("📋 Query", _query_labels,
                               key="wm_query_sel")
         qtype  = QUERIES[qsel]
         qvalue = None
@@ -2633,22 +2922,22 @@ def run(engine=None):
         # map. Single-select. "All regions" shows everything from every
         # available source. Disabled regions appear in the list but are
         # treated as "All regions" (no data to show yet).
-        area_labels = [a["label"] for a in AREAS]
-        # Mark disabled regions visually in the dropdown
-        area_labels_display = [
-            (a["label"] if a["enabled"] else f"{a['label']} (no data)")
-            for a in AREAS
-        ]
+        #
+        # active_area was already resolved up front (before the top
+        # columns) so Zoom-To and Query could use it within the same run.
+        # This widget renders the selector and writes wm_area_sel; the
+        # display list it uses is the same _area_labels_display computed
+        # up front. We don't re-derive active_area here — the up-front
+        # resolution is authoritative for this run. When the user picks a
+        # different area, wm_area_sel updates and the NEXT run's up-front
+        # resolution picks it up.
         area_sel = st.selectbox(
-            "📍 Area", area_labels_display,
-            index=0, key="wm_area_sel",
+            "📍 Area", _area_labels_display,
+            index=_active_idx, key="wm_area_sel",
             help="Partition wells by producing area. Each area reads from "
                  "its own schema (e.g., dataview_gom.well for GOM). "
                  "'All regions' shows every available source.",
         )
-        # Map display label back to the registry entry
-        _sel_idx = area_labels_display.index(area_sel)
-        active_area = AREAS[_sel_idx]
 
         # Auto-zoom to the area's centroid when the selection changes.
         # We compare the chosen id to the last-seen id and trigger a one-shot
@@ -2744,10 +3033,25 @@ def run(engine=None):
             elif st.session_state.get("ai_filter_desc"):
                 st.success(f"✅ {st.session_state['ai_filter_desc']}")
 
-        # Status — when wells haven't been loaded yet, use the standard
-        # PPDM 3.9 status set. This lets the user toggle status filters
-        # without paying the cost of loading all 50K wells upfront.
-        if not wells_df.empty:
+        # Status — the checkbox list is schema-aware. Which status values
+        # exist depends on the active area's table:
+        #   GOM (dataview_gom.well)  → raw BOEM status_code values
+        #                              (PA, ST, COM, TA, …)
+        #   main / dv_well           → if wells are loaded, the distinct
+        #                              well_status values; otherwise the
+        #                              standard PPDM 3.9 fallback set.
+        # Pulling GOM codes is a cheap cached GROUP BY, so the sidebar can
+        # show the right values without loading the full wells list.
+        _area_is_gom = ("gom" in active_area.get("sources", [])
+                        and "main" not in active_area.get("sources", []))
+        if _area_is_gom:
+            all_statuses = _qry_gom_status_codes(engine)
+            if not all_statuses:
+                # Query failed or table empty — degrade gracefully rather
+                # than showing dv_well's PPDM codes, which would be wrong
+                # for GOM. An empty list means "no status filter shown".
+                all_statuses = []
+        elif not wells_df.empty:
             all_statuses = sorted(wells_df["well_status"].dropna().unique())
         else:
             all_statuses = [
@@ -2769,7 +3073,31 @@ def run(engine=None):
             st.rerun()
         sel_statuses = []
         for o in all_statuses:
-            if st.checkbox(f"● {o}", key=f"wm_status_{o}"):
+            # For GOM, show a color swatch + friendly label so the
+            # sidebar doubles as the map legend. Streamlit checkbox
+            # labels strip inline HTML, so the swatch can't go in the
+            # label itself — instead we lay out [swatch | checkbox] in
+            # two columns, the swatch being a small HTML block whose
+            # background is the status color. For non-GOM areas there's
+            # no swatch; the code is shown as-is.
+            # The checkbox VALUE is always the raw code — the filter
+            # compares status_code against sel_statuses — so the label
+            # and swatch are purely cosmetic.
+            if _area_is_gom:
+                _sw_col, _cb_col = st.columns([1, 12])
+                with _sw_col:
+                    st.markdown(
+                        f"<div style='width:12px;height:12px;border-radius:3px;"
+                        f"background:{_boem_status_color(o)};margin-top:6px;'>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                with _cb_col:
+                    _checked = st.checkbox(_boem_status_label(o),
+                                           key=f"wm_status_{o}")
+            else:
+                _checked = st.checkbox(f"● {o}", key=f"wm_status_{o}")
+            if _checked:
                 sel_statuses.append(o)
 
         # ── Well picker — multiselect from filtered list ──────────────
@@ -3329,6 +3657,21 @@ def run(engine=None):
                 lat0  = zoom_target["lat"]
                 lon0  = zoom_target["lon"]
                 zoom0 = zoom_target["zoom"]
+                # Build a bounding box around the zoom target so it goes
+                # through the same fit_bounds + SKIP_FLAG machinery as
+                # drills. Without this, the view-persist JS restores the
+                # user's last saved view and the zoom target never takes.
+                # Box half-size shrinks as zoom level grows — roughly the
+                # span folium shows at that zoom for a 500px-tall map.
+                # The x2 widens the box ~1 zoom level further out, so a
+                # Zoom-To lands with the area in context rather than
+                # filling the whole viewport.
+                _zt_zoom = zoom_target["zoom"]
+                _zt_half = (180.0 / (2 ** _zt_zoom)) * 2.0   # degrees, rough
+                _viewport_bounds = [
+                    [lat0 - _zt_half, lon0 - _zt_half],
+                    [lat0 + _zt_half, lon0 + _zt_half],
+                ]
             elif not dff.empty:
                 # Wells loaded — center on their centroid
                 lat0  = dff["lat"].mean()
@@ -3540,13 +3883,18 @@ def run(engine=None):
             _msg.info("🟦 Loading 3D seismic surveys…")
             _add_seismic_3d(m, _qry_seismic_3d(engine))
 
-        # GOM wells render gated on the Area selector. Driven by
-        # active_area["sources"] which is populated from the AREAS registry
-        # at the top of the page. "gom" in sources → render the GOM grid.
-        # Pass the same selected_cells set used by the dv_well grid — the
-        # selection buffer is shared across area sources. Commit drill
-        # dispatches the actual bbox query based on active_area sources.
-        if "gom" in active_area.get("sources", []):
+        # GOM wells render gated on BOTH the Area selector AND grid_visible.
+        # "gom" in sources comes from the AREAS registry. grid_visible
+        # follows the Show grid toggle and is set False by Commit/Circle
+        # drill so the user can see drilled wells without the heatmap.
+        # Combining the grid (60-80+ cells) with drilled markers (potentially
+        # hundreds) is heavy for st_folium's iframe serialization, so
+        # honoring grid_visible here keeps the map light after a drill.
+        _show_gom_grid = (
+            "gom" in active_area.get("sources", [])
+            and st.session_state.get("grid_visible", True)
+        )
+        if _show_gom_grid:
             _msg.info("🛢 Loading GOM wells grid…")
             try:
                 _phase(15, "🛢 Querying Gulf of America wells — typically 15-20 seconds…")
@@ -3570,10 +3918,33 @@ def run(engine=None):
         # CircleMarkers with popups built by _build_gom_popup_html.
         # Independent of the grid layer — drilled markers can show alongside
         # OR without the grid heatmap depending on Show grid toggle state.
+        #
+        # Status filter: the sidebar status checkboxes are schema-aware —
+        # for GOM they list the real status_code values. Apply that
+        # filter to the drilled wells here so unchecking a status (e.g.
+        # "PA") drops those wells from the map. sel_statuses is the list
+        # of currently-checked codes; an empty list means "show all"
+        # (mirrors the dv_well path's _ss fallback so the map never goes
+        # blank just because every box is unchecked-then-rechecked).
         _gom_drilled = st.session_state.get("viewport_gom_wells", [])
+        if _gom_drilled and _area_is_gom and sel_statuses:
+            _before = len(_gom_drilled)
+            _gom_drilled = [
+                w for w in _gom_drilled
+                if str(w.get("status_code", "")).strip() in sel_statuses
+            ]
+            _filtered_out = _before - len(_gom_drilled)
+        else:
+            _filtered_out = 0
         if _gom_drilled:
             _phase(70, f"🛢 Rendering {len(_gom_drilled):,} drilled GOM wells…")
-            _msg.info(f"🛢 Rendering {len(_gom_drilled):,} drilled GOM wells…")
+            if _filtered_out:
+                _msg.info(
+                    f"🛢 Rendering {len(_gom_drilled):,} drilled GOM wells "
+                    f"({_filtered_out:,} hidden by status filter)…"
+                )
+            else:
+                _msg.info(f"🛢 Rendering {len(_gom_drilled):,} drilled GOM wells…")
             _add_gom_wells_markers(m, _gom_drilled)
             # NOTE: do NOT _phase(100) here — bar persists to st_folium
 
@@ -3767,6 +4138,7 @@ def run(engine=None):
         _has_active_fit = (
             bool(st.session_state.get("_drawn_bounds"))
             or _is_oneshot_fit_this_render
+            or (_viewport_bounds is not None)
         )
         _reset_saved_view = bool(st.session_state.pop("_reset_saved_view", False))
         view_persist = MacroElement()
@@ -4061,43 +4433,84 @@ def run(engine=None):
                     if _center_lat is None or _radius_m is None or _radius_m <= 0:
                         continue
 
-                    # Fire the Haversine query — server-side, capped at 5,000.
+                    # Determine drill targets from active_area sources, same
+                    # pattern as the cell-Commit dispatch. Each source has
+                    # its own circle query that handles its schema's
+                    # coordinate columns and indexes.
+                    _active_sources = active_area.get("sources", [])
+                    if not _active_sources:
+                        st.warning(
+                            "⭕ Pick an area first (Area dropdown above the "
+                            "map) before drawing a circle. The circle drill "
+                            "needs to know which dataset to query."
+                        )
+                        st.session_state.processed_drawings.discard(_geom_hash)
+                        continue
+
+                    # Drill each active source. Errors from one source don't
+                    # block the other.
+                    _circle_main: list = []
+                    _circle_gom:  list = []
+                    _total_main = 0
+                    _total_gom  = 0
+
                     with st.spinner(
                         f"Querying wells within {_radius_m/1000:.1f} km…"
                     ):
-                        try:
-                            _circle_wells, _circle_total = _qry_wells_in_circle(
-                                engine,
-                                _center_lat, _center_lon, _radius_m,
-                                limit=_CIRCLE_CAP,
-                            )
-                        except Exception as _qe:
-                            st.error(f"Circle query failed: {_qe}")
-                            _circle_wells, _circle_total = [], 0
+                        if "main" in _active_sources:
+                            try:
+                                _circle_main, _total_main = _qry_wells_in_circle(
+                                    engine,
+                                    _center_lat, _center_lon, _radius_m,
+                                    limit=_CIRCLE_CAP,
+                                )
+                            except Exception as _qe:
+                                st.error(f"Main circle query failed: {_qe}")
 
-                    if _circle_total == 0:
+                        if "gom" in _active_sources:
+                            try:
+                                _circle_gom, _total_gom = _qry_gom_wells_in_circle(
+                                    engine,
+                                    _center_lat, _center_lon, _radius_m,
+                                    limit=_CIRCLE_CAP,
+                                )
+                            except Exception as _qe:
+                                st.error(f"GOM circle query failed: {_qe}")
+
+                    _circle_total_loaded = len(_circle_main) + len(_circle_gom)
+                    _circle_total_found = _total_main + _total_gom
+
+                    if _circle_total_found == 0:
                         st.info(
                             f"No wells found within {_radius_m/1000:.1f} km of "
                             f"({_center_lat:.4f}, {_center_lon:.4f})"
                         )
-                    elif _circle_total > _CIRCLE_CAP:
+                    elif (_total_main > _CIRCLE_CAP) or (_total_gom > _CIRCLE_CAP):
                         st.warning(
-                            f"⚠️ **{_circle_total:,} wells** inside the circle — "
-                            f"over the {_CIRCLE_CAP:,} cap. Draw a smaller "
-                            f"circle to inspect this area."
+                            f"⚠️ Over the {_CIRCLE_CAP:,} cap "
+                            f"(main: {_total_main:,}, GOM: {_total_gom:,}) — "
+                            f"draw a smaller circle to inspect this area."
                         )
                         # Don't replace viewport — keep what was there
                     else:
-                        # REPLACE viewport with circle wells (per Q4 answer:
-                        # circle is a fresh look, not additive)
-                        st.session_state.viewport_uwis = [
-                            w["uwi"] for w in _circle_wells
-                        ]
-                        # Cache full data for tray/scout lookups
-                        _shadow = st.session_state.get("tray_well_data", {})
-                        for w in _circle_wells:
-                            _shadow[w["uwi"]] = w
-                        st.session_state["tray_well_data"] = _shadow
+                        # REPLACE both viewports — circle is a fresh look,
+                        # not additive. Same pattern as cell Commit.
+                        if _circle_main:
+                            st.session_state.viewport_uwis = [
+                                w["uwi"] for w in _circle_main
+                            ]
+                            # Cache full data for tray/scout lookups
+                            _shadow = st.session_state.get("tray_well_data", {})
+                            for w in _circle_main:
+                                _shadow[w["uwi"]] = w
+                            st.session_state["tray_well_data"] = _shadow
+                        else:
+                            st.session_state.viewport_uwis = []
+
+                        if _circle_gom:
+                            st.session_state["viewport_gom_wells"] = _circle_gom
+                        else:
+                            st.session_state["viewport_gom_wells"] = []
 
                         # Map zooms to center of circle at a zoom level
                         # appropriate to see the whole radius. We do that by
@@ -4120,12 +4533,19 @@ def run(engine=None):
                         # Hide the grid — same as cell Commit. User sees the
                         # drilled wells without heatmap clutter. Toggle 'Show
                         # grid' to bring it back for another selection.
-                        # Update BOTH keys for widget/state sync.
+                        # Pop the widget key (not write) to avoid Streamlit's
+                        # "can't modify widget state after instantiation" error.
                         st.session_state["grid_visible"] = False
-                        st.session_state["grid_visible_toggle"] = False
+                        st.session_state.pop("grid_visible_toggle", None)
 
+                        # Build status message reflecting which sources fired
+                        _parts = []
+                        if _circle_main:
+                            _parts.append(f"{len(_circle_main):,} main")
+                        if _circle_gom:
+                            _parts.append(f"{len(_circle_gom):,} GOM")
                         st.success(
-                            f"⭕ Loaded **{len(_circle_wells):,}** wells "
+                            f"⭕ Loaded **{' + '.join(_parts)}** wells "
                             f"within {_radius_m/1000:.1f} km. "
                             f"Grid hidden — toggle 'Show grid' to draw "
                             f"another circle."
@@ -4159,9 +4579,16 @@ def run(engine=None):
             _cell_steps.append(("gom", 0.36))
 
         _coord_click = map_data.get("last_object_clicked") if map_data else None
+        # If the same click also returned popup content, it was a well marker
+        # click (markers have popups, cells don't). Skip the cell-click path
+        # in that case — otherwise floor-dividing the marker's coords would
+        # toggle a grid cell underneath, polluting the selection buffer.
+        _click_popup = map_data.get("last_object_clicked_popup") if map_data else None
         _handled_as_cell = False
 
-        if _coord_click and _cell_steps and st.session_state.get("grid_visible", True):
+        if (_coord_click and _cell_steps
+                and st.session_state.get("grid_visible", True)
+                and not _click_popup):
             try:
                 _click_lat = float(_coord_click.get("lat"))
                 _click_lon = float(_coord_click.get("lng"))
