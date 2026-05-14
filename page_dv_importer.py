@@ -516,6 +516,20 @@ def render(engine=None):
         except Exception as e:
             st.error(f"GOM loader unavailable: {type(e).__name__}: {e}")
 
+        st.divider()
+
+        # GOM directional survey loader — BOEM Azimuth fixed-width file.
+        # Sibling of the well header loader above; loads survey stations
+        # into dataview_gom.directional_survey_point.
+        try:
+            import page_import_gom_dir_srvy
+            page_import_gom_dir_srvy.render(engine)
+        except Exception as e:
+            st.error(
+                f"GOM directional survey loader unavailable: "
+                f"{type(e).__name__}: {e}"
+            )
+
     st.divider()
 
     # ── Section 1: Upload & Detect ────────────────────────────────────
