@@ -2438,6 +2438,195 @@ def _build_scout_ticket_html(uwi, well_row, engine=None):
     return html
 
 
+def _build_gom_scout_ticket_html(well_id, well_row, engine=None):
+    """
+    Build a scout ticket for one GOM well.
+
+    GOM wells live in dataview_gom.well, which is a header table — there
+    are no GOM equivalents of dv_well's aux tables (formation tops,
+    surveys, completions, production, cores) yet. So this ticket renders
+    the sections the GOM schema can actually fill — Well Header,
+    Location & Lease, Depths, Dates — and shows labelled PLACEHOLDER
+    panels for the aux sections so the layout matches the dv_well ticket
+    and it's obvious what will populate once those tables exist.
+
+    well_row is a GOM well dict (the shape _qry_gom_wells_in_circle /
+    _qry_gom_wells_in_bbox return, shadow-cached in tray_well_data). If
+    `engine` is provided we refresh from dataview_gom.well by well_id so
+    the ticket reflects current data even if the cached dict is stale.
+    """
+    # Refresh from the table when we can — the cached tray dict may be
+    # from an earlier drill. Fall back to the cached row on any failure.
+    if engine is not None and well_id:
+        try:
+            with engine.connect().execution_options(timeout=10) as con:
+                _r = con.execute(text("""
+                    SELECT CONVERT(VARCHAR(36), well_id) AS well_id,
+                           well_name, well_name_suffix, api_well_number,
+                           company_name, region,
+                           surface_lease_number, bottom_lease_number,
+                           bottom_area_code, bottom_block_number,
+                           type_code, status_code, casing_cut_code,
+                           CONVERT(VARCHAR(10), spud_date,        120) AS spud_date,
+                           CONVERT(VARCHAR(10), total_depth_date, 120) AS total_depth_date,
+                           CONVERT(VARCHAR(10), status_date,      120) AS status_date,
+                           CAST(bh_total_md_ft         AS FLOAT) AS bh_total_md_ft,
+                           CAST(true_vertical_depth_ft AS FLOAT) AS true_vertical_depth_ft,
+                           CAST(tvd_subsea_ft          AS FLOAT) AS tvd_subsea_ft,
+                           CAST(rkb_ft                 AS FLOAT) AS rkb_ft,
+                           CAST(kop_ft                 AS FLOAT) AS kop_ft,
+                           CAST(water_depth_ft         AS FLOAT) AS water_depth_ft,
+                           CAST(surface_latitude  AS FLOAT) AS surface_latitude,
+                           CAST(surface_longitude AS FLOAT) AS surface_longitude,
+                           CAST(bottom_latitude   AS FLOAT) AS bottom_latitude,
+                           CAST(bottom_longitude  AS FLOAT) AS bottom_longitude,
+                           source_file
+                    FROM dataview_gom.well
+                    WHERE well_id = :wid
+                """), {"wid": str(well_id)}).fetchone()
+                if _r is not None:
+                    well_row = dict(_r._mapping)
+        except Exception:
+            pass  # keep the cached well_row
+
+    def _g(*keys):
+        """First non-empty value across possible key names, else em-dash."""
+        for k in keys:
+            v = well_row.get(k)
+            if v is not None and str(v).strip() not in ("", "None", "nan"):
+                return v
+        return chr(8212)
+
+    # Header fields — tolerate both the refreshed-row names and the
+    # circle/bbox dict names (they mostly overlap; tvd differs).
+    name   = _g("well_name")
+    suffix = well_row.get("well_name_suffix") or ""
+    title  = f"{name} {suffix}".strip() if suffix and name != chr(8212) else name
+    api    = _g("api_well_number", "api_num")
+    op     = _g("company_name", "operator_name")
+    status = str(_g("status_code")).strip()
+    wtype  = str(_g("type_code")).strip()
+    status_disp = _boem_status_label(status) if status != chr(8212) else chr(8212)
+    status_col  = _boem_status_color(status) if status != chr(8212) else "#888"
+
+    # Lease / location
+    sl     = _g("surface_lease_number")
+    bl     = _g("bottom_lease_number")
+    area   = well_row.get("bottom_area_code") or ""
+    block  = (str(well_row.get("bottom_block_number") or "")).strip()
+    area_disp = _boem_area_name(area) if area else chr(8212)
+    area_block = f"{area_disp} ({area} {block})".strip() if area else chr(8212)
+    region = _g("region")
+
+    def _coords(latk, lonk):
+        lat = well_row.get(latk); lon = well_row.get(lonk)
+        try:
+            if lat is None or lon is None:
+                return chr(8212)
+            latf = float(lat); lonf = float(lon)
+            if latf != latf or lonf != lonf:   # NaN guard
+                return chr(8212)
+            ns = "N" if latf >= 0 else "S"
+            ew = "E" if lonf >= 0 else "W"
+            return f"{abs(latf):.6f}{ns}  {abs(lonf):.6f}{ew}"
+        except (TypeError, ValueError):
+            return chr(8212)
+    surf_loc = _coords("surface_latitude", "surface_longitude")
+    bott_loc = _coords("bottom_latitude", "bottom_longitude")
+
+    # Depths — tvd column name differs between the refreshed row
+    # (true_vertical_depth_ft) and the circle/bbox dict (tvd_ft).
+    md   = well_row.get("bh_total_md_ft")
+    tvd  = (well_row.get("true_vertical_depth_ft")
+            if well_row.get("true_vertical_depth_ft") is not None
+            else well_row.get("tvd_ft"))
+    tvdss = well_row.get("tvd_subsea_ft")
+    rkb  = well_row.get("rkb_ft")
+    kop  = well_row.get("kop_ft")
+    wd   = well_row.get("water_depth_ft")
+
+    spud = str(_g("spud_date"))[:10]
+    tdd  = str(_g("total_depth_date"))[:10]
+    std  = str(_g("status_date"))[:10]
+    src  = _g("source_file")
+
+    _ph = ("<div style='padding:10px 14px;color:#94a3b8;font-size:12px;"
+           "font-style:italic;background:#f8fafc;border:1px solid #e2e8f0;"
+           "border-top:none'>Not yet loaded for Gulf of America wells — "
+           "this section will populate when the data is available.</div>")
+
+    html = f"""
+    <div style='font-family:Arial,Helvetica,sans-serif;border:2px solid #334155;
+                border-radius:8px;overflow:hidden;margin-bottom:8px;
+                background:#ffffff;color:#1e293b'>
+      <div style='background:#334155;color:#ffffff;padding:14px 18px;
+                  border-bottom:4px solid {status_col};
+                  display:flex;justify-content:space-between;align-items:center'>
+        <div>
+          <div style='font-size:17px;font-weight:700;letter-spacing:1.5px;color:#ffffff'>WELL SCOUT TICKET</div>
+          <div style='font-size:12px;color:#cbd5e1;margin-top:2px'>DataView &nbsp;·&nbsp; Gulf of America &nbsp;·&nbsp; {op}</div>
+        </div>
+        <span style='background:{status_col};color:#ffffff;padding:4px 14px;
+              border-radius:12px;font-size:12px;font-weight:700;letter-spacing:0.5px;
+              border:1px solid rgba(255,255,255,0.25)'>{status_disp}</span>
+      </div>
+
+      {_section("Well Header")}
+      {_tbl(
+        _th(["API","Well Name","Well Type","Status"]) +
+        _td([api, f"<b>{title}</b>", wtype, status_disp]) +
+        _th(["Operator","Region","Source File",""]) +
+        _td([op, region, f"<span style='font-size:11px'>{src}</span>", ""], alt=True) +
+        _th(["Well ID (UUID)","","",""]) +
+        _td([f"<span style='font-family:monospace;font-size:11px'>{well_id}</span>",
+             "", "", ""])
+      )}
+
+      {_section("Location & Lease")}
+      {_tbl(
+        _th(["Surface Lease","Bottom Lease","Area / Block",""]) +
+        _td([sl, bl, area_block, ""]) +
+        _th(["Surface Location","Bottom Location","",""]) +
+        _td([surf_loc, bott_loc, "", ""], alt=True)
+      )}
+
+      {_section("Depths")}
+      {_tbl(
+        _th(["Total Depth MD","True Vertical Depth","TVD Subsea","Water Depth"]) +
+        _td([_fmt(md, suffix=" ft"), _fmt(tvd, suffix=" ft"),
+             _fmt(tvdss, suffix=" ft"), _fmt(wd, suffix=" ft")]) +
+        _th(["RKB Elevation","Kickoff Point (KOP)","",""]) +
+        _td([_fmt(rkb, suffix=" ft"), _fmt(kop, suffix=" ft"), "", ""], alt=True)
+      )}
+
+      {_section("Dates")}
+      {_tbl(
+        _th(["Spud Date","Total Depth Date","Status Date",""]) +
+        _td([spud or chr(8212), tdd or chr(8212), std or chr(8212), ""])
+      )}
+
+      {_section("Stratigraphy — Formation Tops")}
+      {_ph}
+
+      {_section("Directional Survey")}
+      {_ph}
+
+      {_section("Completions & Stimulation")}
+      {_ph}
+
+      {_section("Production")}
+      {_ph}
+
+      <div style='background:#334155;color:#cbd5e1;font-size:10px;
+                  padding:6px 14px;text-align:center;letter-spacing:0.5px'>
+        CONFIDENTIAL &nbsp;|&nbsp; {op}
+        &nbsp;|&nbsp; {title}
+        &nbsp;|&nbsp; DataView Scout Ticket &nbsp;·&nbsp; Gulf of America
+      </div>
+    </div>"""
+    return html
+
+
 def _build_batch_pdf(selected_uwis, wells_df, engine):
     """Generate a multi-well PDF with one scout ticket per well."""
     all_html = ""
@@ -4637,36 +4826,73 @@ def run(engine=None):
         if clicked and not _handled_as_cell:
             _clicked_str = str(clicked)
 
-            # Well UWI extraction (existing behavior for marker popups)
+            # GOM wells: this version of streamlit-folium strips HTML
+            # attributes from the popup and returns only visible text, so
+            # data-well-id never survives the round trip. The GOM popup
+            # text does include a line "API <number>", and the BOEM API
+            # number is unique per well — so we parse that out and look
+            # the well up in viewport_gom_wells by api_well_number. From
+            # the matched dict we get the real well_id (UUID) and every
+            # field, then shadow-cache it in tray_well_data keyed by
+            # well_id so uwi_index and the scout panel can find it.
             _uwi = None
-            # Primary: data-uwi attribute (works on older streamlit-folium
-            # that returns full popup HTML)
-            m2 = re.search(r'data-uwi="([^"]+)"', _clicked_str)
-            if m2:
-                _uwi = m2.group(1).strip()
-            else:
-                # Fallbacks: try several patterns for different popup formats
-                # (older HTML-preserving vs newer text-only streamlit-folium)
-                for pat in [
-                    # HTML-preserving: monospace span around UWI
-                    r"font-family:monospace[^>]*>([^<]+)<",
-                    # 14-digit UWI surrounded by whitespace (KS, TX RRC).
-                    # The popup title and UWI may be on the same line in
-                    # streamlit-folium's plain-text return, so we can't
-                    # require start/end of line.
-                    r"(?<!\d)(\d{14})(?!\d)",
-                    # 12-16 digit UWI, more permissive — only used if 14
-                    # didn't match (rare format variations).
-                    r"(?<!\d)(\d{12,16})(?!\d)",
-                    # Dashed UWI format (e.g., "15-009-00865-0000")
-                    r"(\d{2}-\d{3}-\d{5}-\d{2,4}(?:-\d{2})?)",
-                    # PPDM US-prefix format
-                    r"(US[0-9]{14})",
-                ]:
-                    m2 = re.search(pat, _clicked_str)
-                    if m2:
-                        _uwi = m2.group(1).strip()
-                        break
+            _gom_api_match = (
+                re.search(r'\bAPI\s+(\d{8,16})\b', _clicked_str)
+                if "gom" in active_area.get("sources", [])
+                else None
+            )
+            if _gom_api_match:
+                _gom_api = _gom_api_match.group(1).strip()
+                _gom_pool = st.session_state.get("viewport_gom_wells", [])
+                _gom_hit = next(
+                    (w for w in _gom_pool
+                     if str(w.get("api_well_number", "")).strip() == _gom_api),
+                    None,
+                )
+                if _gom_hit is not None:
+                    _uwi = str(_gom_hit.get("well_id", "")).strip()
+                    if _uwi:
+                        _shadow = st.session_state.get("tray_well_data", {})
+                        # Key by well_id (the UUID); preserve every GOM
+                        # field for the scout builder; tag the source so
+                        # the scout panel dispatches to the GOM builder.
+                        _shadow[_uwi] = {**_gom_hit, "uwi": _uwi,
+                                         "_source": "gom"}
+                        st.session_state["tray_well_data"] = _shadow
+
+            # dv_well wells: data-uwi attribute, then digit-pattern
+            # fallbacks. Only run if the GOM branch didn't already
+            # resolve a well_id.
+            if _uwi is None:
+                # Primary: data-uwi attribute (works on older streamlit-folium
+                # that returns full popup HTML)
+                m2 = re.search(r'data-uwi="([^"]+)"', _clicked_str)
+                if m2:
+                    _uwi = m2.group(1).strip()
+                else:
+                    # Fallbacks: try several patterns for different popup
+                    # formats (older HTML-preserving vs newer text-only
+                    # streamlit-folium)
+                    for pat in [
+                        # HTML-preserving: monospace span around UWI
+                        r"font-family:monospace[^>]*>([^<]+)<",
+                        # 14-digit UWI surrounded by whitespace (KS, TX RRC).
+                        # The popup title and UWI may be on the same line in
+                        # streamlit-folium's plain-text return, so we can't
+                        # require start/end of line.
+                        r"(?<!\d)(\d{14})(?!\d)",
+                        # 12-16 digit UWI, more permissive — only used if 14
+                        # didn't match (rare format variations).
+                        r"(?<!\d)(\d{12,16})(?!\d)",
+                        # Dashed UWI format (e.g., "15-009-00865-0000")
+                        r"(\d{2}-\d{3}-\d{5}-\d{2,4}(?:-\d{2})?)",
+                        # PPDM US-prefix format
+                        r"(US[0-9]{14})",
+                    ]:
+                        m2 = re.search(pat, _clicked_str)
+                        if m2:
+                            _uwi = m2.group(1).strip()
+                            break
 
             if _uwi:
                 # Click adds to tray only. Scout ticket is NOT auto-shown —
@@ -4691,9 +4917,24 @@ def run(engine=None):
                 _html = ""
                 for uwi in _summary_uwis:
                     well_row = uwi_index.get(uwi)
-                    if well_row:
+                    if not well_row:
+                        continue
+                    # Dispatch by identifier shape: GOM wells are keyed by
+                    # a UUID well_id (36 chars, dashed); dv_well wells use
+                    # PPDM-style UWIs. A dict tagged _source="gom" (set by
+                    # the GOM popup-click handler) is the explicit signal;
+                    # the UUID-shape check is the fallback.
+                    _is_gom = (
+                        well_row.get("_source") == "gom"
+                        or (isinstance(uwi, str)
+                            and len(uwi) == 36
+                            and uwi.count("-") == 4)
+                    )
+                    if _is_gom:
+                        _html += _build_gom_scout_ticket_html(uwi, well_row, engine)
+                    else:
                         _html += _build_scout_ticket_html(uwi, well_row, engine)
-                        _html += "<div style='page-break-after:always'></div>"
+                    _html += "<div style='page-break-after:always'></div>"
                 st.session_state["_summary_html"]      = _html
                 st.session_state["_summary_cache_key"] = cache_key
 
@@ -4735,10 +4976,20 @@ def run(engine=None):
                 selected_in_tray = []
                 for cu in list(clicked_uwis):
                     well = uwi_index.get(cu, {})
-                    wn   = well.get("well_name", cu)
-                    op   = well.get("operator_name", "")
+                    # Tray label is schema-aware. GOM well dicts use
+                    # well_name + well_name_suffix and company_name;
+                    # dv_well uses well_name and operator_name. Read
+                    # whichever the dict actually has so GOM tray rows
+                    # show the full name and operator, not a bare stub.
+                    _wn_base = well.get("well_name") or cu
+                    _wn_sfx  = well.get("well_name_suffix") or ""
+                    wn = (f"{_wn_base} {_wn_sfx}".strip()
+                          if _wn_sfx else _wn_base)
+                    op = (well.get("operator_name")
+                          or well.get("company_name") or "")
+                    _label = f"🛢 **{wn}** — {op}" if op else f"🛢 **{wn}**"
                     checked = st.checkbox(
-                        f"🛢 **{wn}** — {op}",
+                        _label,
                         value=True,
                         key=f"tray_chk_{cu}")
                     if checked:
