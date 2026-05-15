@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "42-173-10023-0000",
+    "FacilityName": "Permian 13-7A1H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "42-173-10023-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "421731002300",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Permian 13-7A1H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Pioneer Natural Resources",
+    "OperatorID": "osdu:master-data--Organisation:pioneer-natural-resources",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+    "County": "Glasscock",
+    "WellStatus": "TA",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:TA",
+    "SpudDate": "2023-01-15",
+    "DrillingCompletion": "2023-03-24",
+    "InitialCompletionDate": "2023-04-29",
+    "OriginalOperator": "Pioneer Natural Resources",
+    "Field": "Midland Basin",
+    "FormationAtTotalDepth": "Wolfcamp B",
+    "DrillersTotalDepth": 13279,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "NE/4 NW/4",
+    "Section": 13,
+    "Township": 7,
+    "Range": 6,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 31.751146,
+          "Longitude": -101.984951
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -101.984951,
+                  31.751146,
+                  3762.5
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:42173100230000-WB01",
+        "WellboreName": "Permian 13-7A1H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3762.5,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

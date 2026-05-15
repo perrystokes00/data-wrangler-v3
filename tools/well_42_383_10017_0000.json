@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "42-383-10017-0000",
+    "FacilityName": "Permian 21-4C1H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "42-383-10017-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "423831001700",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Permian 21-4C1H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Diamondback Energy",
+    "OperatorID": "osdu:master-data--Organisation:diamondback-energy",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+    "County": "Reagan",
+    "WellStatus": "TA",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:TA",
+    "SpudDate": "2019-01-05",
+    "DrillingCompletion": "2019-03-27",
+    "InitialCompletionDate": "2019-05-02",
+    "OriginalOperator": "Diamondback Energy",
+    "Field": "Midland Basin",
+    "FormationAtTotalDepth": "Wolfcamp A",
+    "DrillersTotalDepth": 10638,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "NW/4 SW/4",
+    "Section": 21,
+    "Township": 4,
+    "Range": 5,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 31.857225,
+          "Longitude": -101.313571
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -101.313571,
+                  31.857225,
+                  3013.2
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:42383100170000-WB01",
+        "WellboreName": "Permian 21-4C1H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3013.2,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "42-283-10086-0000",
+    "FacilityName": "Johnson 12-401H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "42-283-10086-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "422831008600",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Johnson 12-401H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "SM Energy",
+    "OperatorID": "osdu:master-data--Organisation:sm-energy",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+    "County": "LaSalle",
+    "WellStatus": "Producing",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:PRODUCING",
+    "SpudDate": "2018-02-21",
+    "DrillingCompletion": "2018-05-21",
+    "InitialCompletionDate": "2018-07-19",
+    "OriginalOperator": "SM Energy",
+    "Field": "Gulf Coast",
+    "FormationAtTotalDepth": "Eagle Ford",
+    "DrillersTotalDepth": 11421,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "SE/4 NE/4",
+    "Section": 12,
+    "Township": 4,
+    "Range": 6,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 28.999965,
+          "Longitude": -100.19011
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -100.19011,
+                  28.999965,
+                  3676.4
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:42283100860000-WB01",
+        "WellboreName": "Johnson 12-401H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3676.4,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

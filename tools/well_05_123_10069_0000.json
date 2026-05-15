@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "05-123-10069-0000",
+    "FacilityName": "Bonanza 26-72H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "05-123-10069-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "051231006900",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Bonanza 26-72H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Bonanza Creek",
+    "OperatorID": "osdu:master-data--Organisation:bonanza-creek",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:CO",
+    "County": "Weld",
+    "WellStatus": "Shut-in",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:SHUT_IN",
+    "SpudDate": "2025-03-17",
+    "DrillingCompletion": "2025-04-27",
+    "InitialCompletionDate": "2025-06-19",
+    "OriginalOperator": "Bonanza Creek",
+    "Field": "DJ Basin",
+    "FormationAtTotalDepth": "Codell",
+    "DrillersTotalDepth": 7626,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "W/2 SE/4",
+    "Section": 26,
+    "Township": 7,
+    "Range": 11,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 39.88084,
+          "Longitude": -104.903051
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -104.903051,
+                  39.88084,
+                  4190.9
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:05123100690000-WB01",
+        "WellboreName": "Bonanza 26-72H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 4190.9,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:CO",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

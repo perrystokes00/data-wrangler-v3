@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "42-283-10089-0000",
+    "FacilityName": "Permian 7-1202H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "42-283-10089-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "422831008900",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Permian 7-1202H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "BPX Energy",
+    "OperatorID": "osdu:master-data--Organisation:bpx-energy",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+    "County": "LaSalle",
+    "WellStatus": "Producing",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:PRODUCING",
+    "SpudDate": "2021-09-20",
+    "DrillingCompletion": "2021-11-27",
+    "InitialCompletionDate": "2022-01-08",
+    "OriginalOperator": "BPX Energy",
+    "Field": "Gulf Coast",
+    "FormationAtTotalDepth": "Eagle Ford",
+    "DrillersTotalDepth": 10583,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "NE/4 NW/4",
+    "Section": 7,
+    "Township": 12,
+    "Range": 14,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 27.625813,
+          "Longitude": -100.179375
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -100.179375,
+                  27.625813,
+                  3616.7
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:42283100890000-WB01",
+        "WellboreName": "Permian 7-1202H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3616.7,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

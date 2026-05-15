@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "33-053-10080-0000",
+    "FacilityName": "Smith 33-4B1H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "33-053-10080-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "330531008000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Smith 33-4B1H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Whiting Petroleum",
+    "OperatorID": "osdu:master-data--Organisation:whiting-petroleum",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:ND",
+    "County": "McKenzie",
+    "WellStatus": "Producing",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:PRODUCING",
+    "SpudDate": "2018-03-30",
+    "DrillingCompletion": "2018-06-13",
+    "InitialCompletionDate": "2018-08-12",
+    "OriginalOperator": "Whiting Petroleum",
+    "Field": "Williston Basin",
+    "FormationAtTotalDepth": "Bakken",
+    "DrillersTotalDepth": 12184,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "N/2 SW/4",
+    "Section": 33,
+    "Township": 4,
+    "Range": 15,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 47.80715,
+          "Longitude": -103.707112
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -103.707112,
+                  47.80715,
+                  3751.3
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:33053100800000-WB01",
+        "WellboreName": "Smith 33-4B1H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3751.3,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:ND",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

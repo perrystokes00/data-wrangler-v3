@@ -3,7 +3,7 @@ page_workbench.py
 =================
 File Catalog & Workbench -- three tabs:
 
-  1. Scan & Enrich  -- fast scan, bulk insert, Phase 2 header extraction
+  1. Scan & Extract -- fast scan, bulk insert, Phase 2 header extraction
   2. Browse & View  -- filter catalog, view/plot files, extract and load data
   3. Header Files   -- query FILE_WELL_HEADER / FILE_SEIS_HEADER, export CSV
 """
@@ -24,19 +24,25 @@ P190_EXTS   = {".p190", ".p90", ".p1"}
 SHP_EXTS    = {".shp", ".geojson", ".gpkg", ".kml", ".kmz"}
 OFFICE_EXTS = {".xlsx", ".xls", ".xlsm", ".docx", ".doc", ".csv", ".tsv"}
 IMAGE_EXTS  = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+WITSML_EXTS = {".xml"}    # WITSML 1.3.1 / 1.4.1 delivery format
+JSON_LOG_EXTS = {".json"} # OSDU WellLog, WellboreMarkerSet, PressureData,
+                           # SeismicAcquisitionSurvey, JSON Well Log Format
 LOG_EXTS    = LAS_EXTS | DLIS_EXTS | LIS_EXTS
 
 ALL_EXTS = (PDF_EXTS | LOG_EXTS | SEGY_EXTS | P190_EXTS |
-            SHP_EXTS | OFFICE_EXTS | IMAGE_EXTS)
+            SHP_EXTS | OFFICE_EXTS | IMAGE_EXTS |
+            WITSML_EXTS | JSON_LOG_EXTS)
 
 EXT_GROUP = {}
-for e in PDF_EXTS:    EXT_GROUP[e] = "PDF"
-for e in LOG_EXTS:    EXT_GROUP[e] = "Well Log"
-for e in SEGY_EXTS:   EXT_GROUP[e] = "Seismic"
-for e in P190_EXTS:   EXT_GROUP[e] = "Seismic"
-for e in SHP_EXTS:    EXT_GROUP[e] = "Shapefile"
-for e in OFFICE_EXTS: EXT_GROUP[e] = "Office"
-for e in IMAGE_EXTS:  EXT_GROUP[e] = "Image"
+for e in PDF_EXTS:      EXT_GROUP[e] = "PDF"
+for e in LOG_EXTS:      EXT_GROUP[e] = "Well Log"
+for e in SEGY_EXTS:     EXT_GROUP[e] = "Seismic"
+for e in P190_EXTS:     EXT_GROUP[e] = "Seismic"
+for e in SHP_EXTS:      EXT_GROUP[e] = "Shapefile"
+for e in OFFICE_EXTS:   EXT_GROUP[e] = "Office"
+for e in IMAGE_EXTS:    EXT_GROUP[e] = "Image"
+for e in WITSML_EXTS:   EXT_GROUP[e] = "WITSML"
+for e in JSON_LOG_EXTS: EXT_GROUP[e] = "OSDU / JSON Well Log"
 
 ENRICH_CHUNK = 20   # files processed per rerun cycle
 
@@ -48,7 +54,7 @@ ENRICH_CHUNK = 20   # files processed per rerun cycle
 def run(engine=None, dialect: str = "mssql"):
     st.title("🗂️ File Catalog & Workbench")
     st.caption(
-        "Scan & enrich files · Browse & view · "
+        "Scan & extract files · Browse & view · "
         "Extract data · Load to DB"
     )
 
@@ -61,12 +67,12 @@ def run(engine=None, dialect: str = "mssql"):
         _enrich_chunk(engine, dialect)
     elif st.session_state.get("wb_enrich_done"):
         st.success(
-            f"✅ Enrichment complete — "
+            f"✅ Extraction complete — "
             f"{st.session_state.get('wb_enrich_total',0):,} files processed."
         )
 
     tabs = st.tabs([
-        "🔍 Scan & Enrich",
+        "🔍 Scan & Extract",
         "📂 Browse & View",
         "🗺️ Well Map",
         "📋 Header Files",
@@ -79,25 +85,61 @@ def run(engine=None, dialect: str = "mssql"):
 
 
 # =============================================================================
-# Tab 1 -- Scan & Enrich
+# Tab 1 -- Scan & Extract
 # =============================================================================
 
 def _tab_scan(engine, dialect):
     from sqlalchemy import text as _t
 
-    st.markdown("#### 🔍 Scan & Enrich")
+    st.markdown("#### 🔍 Scan & Extract")
 
     # ── Config ────────────────────────────────────────────────────────────────
     scan_path = st.text_input(
         "Root folder",
+        value=st.session_state.get("wb_last_scan_path", ""),
         placeholder=r"\\server\share\WellData  or  C:\WellData",
         key="wb_scan_path",
     )
     ext_groups = st.multiselect(
-        "File types",
-        ["PDF","Well Log","Seismic","Shapefile","Office","Image"],
-        default=["PDF","Well Log","Seismic","Shapefile","Office"],
+        "File types to scan",
+        options=[
+            "PDF",
+            "Well Log",
+            "Seismic",
+            "Shapefile",
+            "Office",
+            "WITSML",
+            "OSDU / JSON Well Log",
+            "Image",
+        ],
+        default=[
+            "PDF",
+            "Well Log",
+            "Seismic",
+            "Shapefile",
+            "Office",
+            "WITSML",
+            "OSDU / JSON Well Log",
+        ],
         key="wb_scan_exts",
+        help=(
+            "**PDF** — .pdf\n\n"
+            "**Well Log** — .las  ·  .dlis  ·  .dlf  ·  .dis  ·  .lis\n\n"
+            "**Seismic** — .segy  ·  .sgy  ·  .seg  ·  .p190  ·  .p90  ·  .p1\n\n"
+            "**Shapefile** — .shp  ·  .geojson  ·  .gpkg  ·  .kml  ·  .kmz\n\n"
+            "**Office** — .xlsx  ·  .xls  ·  .xlsm  ·  .docx  ·  .doc  ·  .csv  ·  .tsv\n\n"
+            "**WITSML** — .xml\n"
+            "*(WITSML 1.3.1 / 1.4.1 — trajectory, log, mudLog, well, wellbore)*\n\n"
+            "**OSDU / JSON Well Log** — .json\n"
+            "*(16 OSDU schemas: Well, Wellbore, WellLog, WellboreTrajectory, "
+            "WellboreMarkerSet, WellborePressureData, WellboreCompletion, "
+            "WellCoreAnalysis, ProductionVolume, RockFluidOrganisation/SCAL, "
+            "Field, Reservoir, SeismicAcquisitionSurvey, SeismicHorizon, "
+            "SeismicFault, Document — plus JSON Well Log Format/JSONWLF)*\n\n"
+            "**Image** — .tif  ·  .tiff  ·  .png  ·  .jpg  ·  .jpeg\n"
+            "*(Phase 1 scan only — no extractor. Useful for inventorying "
+            "core photos, well plat images, seismic sections etc.)*"
+        ),
     )
     _exts = {e for e, g in EXT_GROUP.items() if g in ext_groups}
 
@@ -111,10 +153,11 @@ def _tab_scan(engine, dialect):
         elif not Path(scan_path).exists():
             st.error(f"Not found: `{scan_path}`")
         else:
+            st.session_state["wb_last_scan_path"] = scan_path
             _run_scan(engine, dialect, scan_path, _exts)
 
     # Phase 2
-    if c2.button("⚙️ Enrich (Phase 2)", type="secondary",
+    if c2.button("⚙️ Extract (Phase 2)", type="secondary",
                  key="wb_p2", use_container_width=True):
         st.session_state["wb_enriching"]     = True
         st.session_state["wb_enrich_offset"] = 0
@@ -144,11 +187,12 @@ def _tab_scan(engine, dialect):
                 SELECT
                     FILE_TYPE_GROUP,
                     COUNT(*)                                               total,
-                    SUM(CASE WHEN HEADER_EXTRACTED='Y' THEN 1 ELSE 0 END) enriched,
+                    SUM(CASE WHEN HEADER_EXTRACTED='Y' THEN 1 ELSE 0 END) extracted,
                     SUM(CASE WHEN CATALOG_READINESS='READY'     THEN 1 ELSE 0 END) ready,
                     SUM(CASE WHEN CATALOG_READINESS='NEEDS_UWI' THEN 1 ELSE 0 END) needs_uwi,
                     SUM(CASE WHEN CATALOG_READINESS='ATTENTION' THEN 1 ELSE 0 END) attention,
-                    SUM(CASE WHEN ISNULL(FLAG_DELETE,'N')='Y'   THEN 1 ELSE 0 END) flagged
+                    SUM(CASE WHEN ISNULL(FLAG_DELETE,'N')='Y'   THEN 1 ELSE 0 END) flagged,
+                    SUM(CASE WHEN HEADER_EXTRACTED='S'  THEN 1 ELSE 0 END) skipped
                 FROM file_catalog.GLOBAL_FILE_CATALOG
                 GROUP BY FILE_TYPE_GROUP
                 ORDER BY total DESC
@@ -156,14 +200,18 @@ def _tab_scan(engine, dialect):
 
         if rows:
             df = pd.DataFrame(rows, columns=[
-                "Type","Total","Enriched","Ready","Needs UWI","Attention","Flagged"])
-            tot = df["Total"].sum()
-            enr = df["Enriched"].sum()
-            m1,m2,m3,m4 = st.columns(4)
+                "Type","Total","Extracted","Ready","Needs UWI","Attention","Flagged","Skipped"])
+            tot  = df["Total"].sum()
+            enr  = df["Extracted"].sum()
+            skip = int(df["Skipped"].sum())
+            m1,m2,m3,m4,m5 = st.columns(5)
             m1.metric("Total cataloged",    f"{tot:,}")
-            m2.metric("Enriched",           f"{enr:,}")
-            m3.metric("Pending enrichment", f"{tot-enr:,}")
-            m4.metric("Flagged",            int(df["Flagged"].sum()))
+            m2.metric("Extracted",          f"{enr:,}")
+            m3.metric("Pending extraction", f"{tot-enr-skip:,}")
+            m4.metric("Skipped",            skip,
+                      help="Files skipped — too large for extraction. "
+                           "HEADER_EXTRACTED='S' in catalog.")
+            m5.metric("Flagged",            int(df["Flagged"].sum()))
             st.dataframe(df, hide_index=True, use_container_width=True)
         else:
             st.info("Catalog is empty — run Phase 1 scan.")
@@ -172,53 +220,247 @@ def _tab_scan(engine, dialect):
 
     # ── Delete tools ──────────────────────────────────────────────────────────
     st.divider()
+
+    # Extractor reference — behind an expander so it doesn't dominate the page
+    with st.expander("📋 Extractor reference — what Phase 2 captures", expanded=False):
+        st.caption(
+            "Phase 2 reads each file's internal header and writes identifying "
+            "metadata to FILE_WELL_HEADER or FILE_SEIS_HEADER. Files on disk "
+            "are never modified. File types with no extractor are cataloged in "
+            "Phase 1 but skipped in Phase 2 — deleting them before running "
+            "extraction keeps the batch fast.\n\n"
+            "**Well logs —** "
+            "LAS (.las): UWI/API, well name, operator, field, state, county, "
+            "lat/lon, total depth, spud date, contractor, curve mnemonics, depth range. "
+            "DLIS (.dlis .dlf .dis): well name, field, operator from origins block, "
+            "channel count, frame count. "
+            "LIS (.lis): well name, UWI, operator, field, state, county, contractor, "
+            "depth range, curve mnemonics via dlisio; raw byte scan fallback for "
+            "non-standard files.\n\n"
+            "**Seismic —** "
+            "SEG-Y (.segy .sgy .seg): trace count, sample interval, 2D/3D "
+            "classification (updates FILE_TYPE_GROUP), survey name and contractor "
+            "from text header, bounding box and survey outline polygon from 400 "
+            "strided trace headers with CRS detection and WGS84 reprojection, "
+            "inline/crossline range for 3D surveys. "
+            "P190 (.p190 .p90 .p1): survey name, contractor, shot count, "
+            "bounding box from S-records.\n\n"
+            "**Documents —** "
+            "PDF (.pdf): report type classification (directional survey, mud log, "
+            "scout ticket, completion, DST, core, well proposal), UWI, well name, "
+            "operator, field, state, county, lat/lon, total depth, spud date, "
+            "rig release, survey type, contractor, confidence score.\n\n"
+            "**Spatial —** "
+            "Shapefile / GeoJSON / GeoPackage / KML (.shp .geojson .gpkg .kml .kmz): "
+            "feature type classification (well, seismic 2D/3D, field, lease, "
+            "pipeline, facility, boundary), CRS, bounding box, DBF column mapping, "
+            "sample UWIs/well names/operators/field names/status codes, date ranges. "
+            "Well shapefiles promote UWI and operator into the catalog record.\n\n"
+            "**Office —** "
+            "Excel (.xlsx .xls .xlsm): sheet classification (BOEM borehole, KGS well, "
+            "production, completion, formation tops, well header, core, pressure, "
+            "survey, reserves), row count, column headers, UWI from data. "
+            "Known schemas (BOEM_BOREHOLE, KGS_WELL, RRC_WELL) detected before "
+            "generic classification. Read via openpyxl streaming — no hang on "
+            "large files. "
+            "Word (.docx .doc): document type classification (completion report, "
+            "geological, DST, well proposal, regulatory, formation tops, HSE), "
+            "headings, table classification, UWI and well name from text. "
+            "CSV/TSV: column classification, row count, UWI from data.\n\n"
+            "**WITSML (.xml) —** "
+            "Trajectory: well name, UWI, survey tool type, station count, depth "
+            "range, contractor from commonData. "
+            "Log: curve mnemonics from logCurveInfo, depth range, service company, "
+            "run number. "
+            "MudLog: formation interval count, gas show summary from chromatograph "
+            "elements, comments. "
+            "File must contain the witsml.org/schemas namespace — other XML files "
+            "(config, SVG, RSS) are skipped automatically.\n\n"
+            "**JSON Well Log / OSDU (.json) —** "
+            "16 OSDU schemas detected by the 'kind' field: "
+            "Well (name, UWI, operator, lat/lon, field, spud, TD), "
+            "WellLog (curves, depth range, contractor), "
+            "WellboreTrajectory (KOP, landing, lateral length, max inc, max DLS), "
+            "WellboreMarkerSet (full formation tops list with MD/TVD/subsea/quality), "
+            "WellborePressureData (DST pressures, flow rates, permeability, skin), "
+            "WellboreCompletion (stages, clusters, fluid/proppant volumes, formations), "
+            "WellCoreAnalysis (plug count, porosity/perm stats, full plug list), "
+            "ProductionVolume (monthly records, cumulative volumes, peak rate), "
+            "RockFluidOrganisation / SCAL (system types, end-point saturations, "
+            "capillary pressure method), "
+            "Field (discovery year/well, basin, fluid type, bbox, cumulative production), "
+            "Reservoir (porosity, perm, net pay, pressure, temperature, GOR, OOIP), "
+            "SeismicAcquisitionSurvey (2D/3D, bbox, inline/crossline, fold, bin size), "
+            "SeismicHorizon (geologic unit, depth stats, node count, well control), "
+            "SeismicFault (fault type, strike/dip, max throw, length, horizons cut), "
+            "Document (document type, author, file format, page count). "
+            "Also handles JSON Well Log Format (JSONWLF) from NORCE/NPD. "
+            "Non-petroleum JSON (config files, package.json) skipped automatically "
+            "by a 512-byte header check."
+        )
+
+    # Delete section — heading first, then Select All, then grid
     st.markdown("**Delete from catalog**")
-    d1, d2 = st.columns(2)
+    st.caption(
+        "Removes selected file types from the catalog index only — "
+        "files on disk are never touched."
+    )
 
-    del_ext = d1.text_input("By extension", placeholder=".tif",
-                             key="wb_del_ext")
-    if del_ext and d1.button("🗑️ Delete", key="wb_del_ext_btn"):
-        try:
-            with engine.begin() as con:
-                n = con.execute(_t("""
-                    DELETE FROM file_catalog.GLOBAL_FILE_CATALOG
-                    WHERE FILE_EXT = :e
-                """), {"e": del_ext.lower()}).rowcount
-            st.success(f"Deleted {n:,} rows with ext `{del_ext}`")
-        except Exception as e:
-            st.error(f"Delete failed: {e}")
+    # Human-readable label for every extension the catalog might contain.
+    # Covers all known sets plus a fallback for anything unexpected.
+    _EXT_LABEL = {
+        # Well logs
+        ".las":   "LAS — Log ASCII Standard well log",
+        ".dlis":  "DLIS — Digital Log Interchange Standard",
+        ".dlf":   "DLF — DLIS variant",
+        ".dis":   "DIS — DLIS variant",
+        ".lis":   "LIS — Log Information Standard",
+        # Seismic
+        ".segy":  "SEG-Y — Seismic data (classified as 2D or 3D after extraction)",
+        ".sgy":   "SGY — SEG-Y seismic data (classified as 2D or 3D after extraction)",
+        ".seg":   "SEG — SEG-Y seismic data (legacy extension)",
+        ".p190":  "P190 — Navigation / shot point data",
+        ".p90":   "P90 — P190 variant",
+        ".p1":    "P1 — P190 variant",
+        # Documents
+        ".pdf":   "PDF — Portable Document (scout tickets, reports, surveys)",
+        # Office
+        ".xlsx":  "XLSX — Excel workbook",
+        ".xls":   "XLS — Excel workbook (legacy)",
+        ".xlsm":  "XLSM — Excel macro-enabled workbook",
+        ".docx":  "DOCX — Word document",
+        ".doc":   "DOC — Word document (legacy)",
+        ".csv":   "CSV — Comma-separated values",
+        ".tsv":   "TSV — Tab-separated values",
+        # Shapefiles / spatial
+        ".shp":     "SHP — Shapefile geometry",
+        ".geojson": "GeoJSON — Geographic JSON",
+        ".gpkg":    "GPKG — GeoPackage",
+        ".kml":     "KML — Keyhole Markup Language",
+        ".kmz":     "KMZ — Compressed KML",
+        # WITSML
+        ".xml":     "XML / WITSML — trajectory, log, mud log, well header",
+        # JSON Well Log / OSDU
+        ".json":    "JSON — OSDU (16 schemas: Well, Wellbore, WellLog, WellboreTrajectory, "
+                   "WellboreMarkerSet, WellborePressureData, WellboreCompletion, "
+                   "WellCoreAnalysis, ProductionVolume, RockFluidOrganisation/SCAL, "
+                   "Field, Reservoir, SeismicAcquisitionSurvey, SeismicHorizon, "
+                   "SeismicFault, Document) + JSON Well Log Format (JSONWLF)",
+        ".tiff":  "TIFF — TIFF image",
+        ".png":   "PNG — PNG image",
+        ".jpg":   "JPG — JPEG image",
+        ".jpeg":  "JPEG — JPEG image",
+    }
 
-    del_pat = d2.text_input("By filename pattern", placeholder="thumb",
-                             key="wb_del_pat")
-    if del_pat and d2.button("🔍 Preview", key="wb_del_pat_prev"):
-        try:
-            with engine.connect() as con:
-                cnt = con.execute(_t("""
-                    SELECT COUNT(*) FROM file_catalog.GLOBAL_FILE_CATALOG
-                    WHERE FILE_NAME LIKE :p
-                """), {"p": f"%{del_pat}%"}).scalar()
-            st.session_state["wb_del_cnt"] = cnt
-            st.session_state["wb_del_val"] = del_pat
-        except Exception as e:
-            st.error(str(e))
+    # Load distinct extensions currently in the catalog
+    try:
+        with engine.connect() as con:
+            _ext_rows = con.execute(_t("""
+                SELECT FILE_EXT, COUNT(*) AS n
+                FROM file_catalog.GLOBAL_FILE_CATALOG
+                WHERE FILE_EXT IS NOT NULL AND FILE_EXT <> ''
+                GROUP BY FILE_EXT
+                ORDER BY FILE_EXT
+            """)).fetchall()
+        _ext_counts = {r[0]: r[1] for r in _ext_rows}
+    except Exception as _e:
+        _ext_counts = {}
+        st.caption(f"Extension list unavailable: {_e}")
 
-    cnt = st.session_state.get("wb_del_cnt")
-    pat = st.session_state.get("wb_del_val")
-    if cnt is not None and pat == del_pat and del_pat:
-        st.caption(f"{cnt:,} files match `*{del_pat}*`")
-        if cnt > 0 and st.button(
-                f"✅ Confirm delete {cnt:,}", key="wb_del_confirm",
-                type="primary"):
-            try:
-                with engine.begin() as con:
-                    n = con.execute(_t("""
-                        DELETE FROM file_catalog.GLOBAL_FILE_CATALOG
-                        WHERE FILE_NAME LIKE :p
-                    """), {"p": f"%{del_pat}%"}).rowcount
-                st.success(f"Deleted {n:,} rows")
-                st.session_state.pop("wb_del_cnt", None)
-            except Exception as e:
-                st.error(str(e))
+    if _ext_counts:
+        _total_all_files = sum(_ext_counts.values())
+
+        # Select ALL checkbox — sits above the grid, turns on every Delete
+        # checkbox without being a separate toggle-style control. Matches
+        # the spreadsheet metaphor: header checkbox selects all rows.
+        _sel_all = st.checkbox(
+            f"☑ Select ALL  ({len(_ext_counts)} extension types · "
+            f"{_total_all_files:,} files)",
+            key="wb_sel_all",
+            help="Check to mark every extension for deletion. "
+                 "Uncheck individual rows in the grid to exclude them.",
+        )
+
+        st.markdown("---")
+
+        # Build the dataframe for the editor
+        import pandas as _pd
+        _rows = []
+        for _ext in sorted(_ext_counts.keys()):
+            _rows.append({
+                "Delete": _sel_all,   # pre-check all rows when Select ALL is on
+                "Extension": _ext,
+                "Description": _EXT_LABEL.get(
+                    _ext.lower(),
+                    f"{_ext.lstrip('.').upper()} file"),
+                "Files": _ext_counts[_ext],
+            })
+        _df_exts = _pd.DataFrame(_rows)
+
+        _edited = st.data_editor(
+            _df_exts,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["Extension", "Description", "Files"],
+            column_config={
+                "Delete": st.column_config.CheckboxColumn(
+                    "Delete", width="small"),
+                "Extension": st.column_config.TextColumn(
+                    "Extension", width="small"),
+                "Description": st.column_config.TextColumn(
+                    "Description"),
+                "Files": st.column_config.NumberColumn(
+                    "Files", width="small", format="%d"),
+            },
+            key="wb_ext_editor",
+        )
+
+        _checked_exts = _edited.loc[
+            _edited["Delete"] == True, "Extension"].tolist()
+
+        st.markdown("---")
+
+        if _checked_exts:
+            _total_sel = sum(_ext_counts.get(e, 0) for e in _checked_exts)
+            st.caption(
+                f"{len(_checked_exts)} extension(s) selected · "
+                f"{_total_sel:,} files will be removed from the catalog index "
+                f"(files on disk are NOT deleted)"
+            )
+            if st.button(
+                f"🗑️ Delete {_total_sel:,} files from catalog",
+                key="wb_del_ext_go",
+                type="primary",
+            ):
+                st.session_state["wb_del_ext_confirm"] = True
+
+            if st.session_state.get("wb_del_ext_confirm"):
+                st.warning(
+                    f"Remove **{_total_sel:,} files** with "
+                    f"{len(_checked_exts)} extension(s) from catalog? "
+                    "This cannot be undone."
+                )
+                _cc1, _cc2 = st.columns(2)
+                if _cc1.button("✅ Yes, delete", key="wb_del_ext_yes",
+                               type="primary"):
+                    try:
+                        _deleted = 0
+                        with engine.begin() as con:
+                            for _ext in _checked_exts:
+                                _deleted += con.execute(_t("""
+                                    DELETE FROM file_catalog.GLOBAL_FILE_CATALOG
+                                    WHERE FILE_EXT = :e
+                                """), {"e": _ext}).rowcount
+                        st.success(f"Deleted {_deleted:,} files from catalog.")
+                        st.session_state.pop("wb_del_ext_confirm", None)
+                        st.rerun()
+                    except Exception as _de:
+                        st.error(f"Delete failed: {_de}")
+                if _cc2.button("✗ Cancel", key="wb_del_ext_cancel"):
+                    st.session_state.pop("wb_del_ext_confirm", None)
+                    st.rerun()
+    else:
+        st.caption("Catalog is empty — nothing to delete.")
 
     # ── Delete all flagged ────────────────────────────────────────────────────
     st.divider()
@@ -281,6 +523,25 @@ def _run_scan(engine, dialect, root: str, exts: set):
                         else:
                             ext = os.path.splitext(entry.name)[1].lower()
                             if ext in exts:
+                                # JSON peek — only catalog .json files that
+                                # look like OSDU or JSONWLF petroleum data.
+                                # Reads the first 100 bytes only (single disk
+                                # read) so Phase 1 speed is not affected.
+                                # Skips package.json, settings.json, tsconfig,
+                                # Streamlit config, and any other non-petroleum
+                                # JSON files before they enter the catalog.
+                                if ext == ".json":
+                                    try:
+                                        with open(entry.path, "rb") as _jf:
+                                            _peek = _jf.read(100)
+                                        # OSDU files always have "kind" near
+                                        # the top. JSONWLF files have "header".
+                                        # Any other JSON is not petroleum data.
+                                        if (b'"kind"'   not in _peek and
+                                                b'"header"' not in _peek):
+                                            continue
+                                    except OSError:
+                                        continue
                                 st_res = entry.stat()
                                 found.append((
                                     entry.path, entry.name, ext,
@@ -383,7 +644,7 @@ def _run_scan(engine, dialect, root: str, exts: set):
         st.success(
             f"✅ Phase 1 complete — {len(found):,} files "
             f"across {folders:,} folders. "
-            f"Click **Enrich** to extract headers."
+            f"Click **Extract** to extract headers."
         )
     except Exception as e:
         st.error(f"Bulk insert failed: {e}")
@@ -412,6 +673,33 @@ def _enrich_chunk(engine, dialect):
     from sqlalchemy import text as _t
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    # ── Ensure new 3D columns exist in FILE_SEIS_HEADER ──────────────────────
+    # Added when the 3D extractor was upgraded (inline/crossline range and
+    # survey outline polygon). ALTER TABLE is a no-op if column already
+    # exists — guarded by the sys.columns check so it's safe to run every
+    # time and costs a single metadata query per session.
+    try:
+        with engine.begin() as _con:
+            for _col, _def in [
+                ("IL_MIN",         "INT NULL"),
+                ("IL_MAX",         "INT NULL"),
+                ("XL_MIN",         "INT NULL"),
+                ("XL_MAX",         "INT NULL"),
+                ("SURVEY_OUTLINE", "NVARCHAR(MAX) NULL"),
+            ]:
+                _con.execute(_t(f"""
+                    IF NOT EXISTS (
+                        SELECT 1 FROM sys.columns
+                        WHERE object_id = OBJECT_ID(
+                            'file_catalog.FILE_SEIS_HEADER')
+                          AND name = '{_col}'
+                    )
+                    ALTER TABLE file_catalog.FILE_SEIS_HEADER
+                        ADD [{_col}] {_def}
+                """))
+    except Exception:
+        pass  # Non-fatal — extraction proceeds; new fields just won't write
+
     # Phase 2 worker count from session state. Default 8 — balanced for
     # mixed extraction (PDF/DLIS/Office). User can tune via the slider in
     # the Scan tab.
@@ -432,16 +720,17 @@ def _enrich_chunk(engine, dialect):
                 SELECT TOP {ENRICH_CHUNK}
                     INVENTORY_ID, FILE_PATH, FILE_EXT
                 FROM file_catalog.GLOBAL_FILE_CATALOG
-                WHERE HEADER_EXTRACTED IS NULL OR HEADER_EXTRACTED='N'
+                WHERE (HEADER_EXTRACTED IS NULL OR HEADER_EXTRACTED='N')
+                  AND ISNULL(HEADER_EXTRACTED,'') <> 'S'
                 ORDER BY SCAN_DATE DESC
             """)).fetchall()
     except Exception as e:
-        st.error(f"Enrichment query failed: {e}")
+        st.error(f"Extraction query failed: {e}")
         st.session_state["wb_enriching"] = False
         return
 
     if not rows:
-        st.success("✅ Phase 2 complete — all files enriched.")
+        st.success("✅ Phase 2 complete — all files extracted.")
         st.session_state["wb_enriching"] = False
         st.session_state["wb_enrich_done"] = True
         st.session_state["wb_enrich_total"] = total_all
@@ -460,6 +749,12 @@ def _enrich_chunk(engine, dialect):
         _t0 = _time.monotonic()
         try:
             fields = _extract_fields(fpath, (fext or "").lower())
+            # Size-gate skip — surface as a distinct status so it's written
+            # as HEADER_EXTRACTED='S' and never re-attempted.
+            if fields.get("skip_reason"):
+                return ("skip", inv_id, fpath, fext, fields,
+                        fields["skip_reason"],
+                        _time.monotonic() - _t0)
             return ("ok", inv_id, fpath, fext, fields, None,
                     _time.monotonic() - _t0)
         except Exception as e:
@@ -473,9 +768,9 @@ def _enrich_chunk(engine, dialect):
         futures = [pool.submit(_worker, row) for row in rows]
         for fut in as_completed(futures):
             try:
-                # Per-file timeout: 5 min ceiling. Hung extractor doesn't
+                # Per-file timeout: 60s ceiling. Hung extractor doesn't
                 # block the chunk.
-                results.append(fut.result(timeout=300))
+                results.append(fut.result(timeout=60))
             except Exception as e:
                 results.append(("err", None, "", "", None,
                                 f"worker died: {e}", 0.0))
@@ -502,6 +797,7 @@ def _enrich_chunk(engine, dialect):
     # Build parameter lists by statement shape
     update_params: list = []     # for GLOBAL_FILE_CATALOG (success path)
     error_params:  list = []     # for GLOBAL_FILE_CATALOG (error path - 'E')
+    skip_params:   list = []     # for GLOBAL_FILE_CATALOG (skip path - 'S')
     well_params:   list = []     # for FILE_WELL_HEADER MERGE
     seis_params:   list = []     # for FILE_SEIS_HEADER MERGE
     done = 0
@@ -518,14 +814,26 @@ def _enrich_chunk(engine, dialect):
             # Success: queue the GLOBAL_FILE_CATALOG UPDATE and the
             # matching MERGE for whichever header table this category lives in.
             score, readiness = _score(fields)
-            update_params.append({
-                "score":     score,
-                "readiness": readiness,
-                "uwi":       _trunc(fields.get("uwi"), 40),
-                "issues":    "; ".join(_issues(fields)),
-                "id":        inv_id,
-            })
             category = fields.get("file_category", "UNKNOWN")
+            # Refine FILE_TYPE_GROUP for seismic files now that we know
+            # whether the file is 2D or 3D. Phase 1 sets "Seismic" for all
+            # SEG-Y; Phase 2 upgrades it to "Seismic 2D" or "Seismic 3D"
+            # based on the trace count heuristic in _extract_fields.
+            _seis_type = fields.get("seis_set_type")  # "2D", "3D", or None
+            if category == "SEIS" and _seis_type in ("2D", "3D"):
+                _type_group = f"Seismic {_seis_type}"
+            else:
+                # Keep the existing group from Phase 1 scan for non-seismic
+                # files and seismic files where type couldn't be determined.
+                _type_group = EXT_GROUP.get((fext or "").lower(), "Other")
+            update_params.append({
+                "score":      score,
+                "readiness":  readiness,
+                "uwi":        _trunc(fields.get("uwi"), 40),
+                "issues":     "; ".join(_issues(fields)),
+                "type_group": _type_group,
+                "id":         inv_id,
+            })
             if category == "WELL":
                 well_params.append({
                     "hid":     uuid.uuid5(uuid.NAMESPACE_URL, inv_id).hex.upper(),
@@ -564,8 +872,17 @@ def _enrich_chunk(engine, dialect):
                     "tc":       _safe_trace_count(fields.get("trace_count")),
                     "sf":       _trunc(fields.get("shot_first"),20),
                     "sl":       _trunc(fields.get("shot_last"),20),
+                    "il_min":   fields.get("il_min"),
+                    "il_max":   fields.get("il_max"),
+                    "xl_min":   fields.get("xl_min"),
+                    "xl_max":   fields.get("xl_max"),
+                    "outline":  fields.get("survey_outline"),
                 })
             done += 1
+        elif outcome == "skip" and inv_id is not None:
+            # Size-gate or other deliberate skip — write 'S' so the file
+            # is never re-attempted. The skip_reason is stored in err.
+            skip_params.append({"id": inv_id, "reason": (err or "SKIPPED")[:500]})
         elif inv_id is not None:
             # Extraction errored — queue the error-marker UPDATE
             error_params.append({"id": inv_id})
@@ -583,6 +900,7 @@ def _enrich_chunk(engine, dialect):
                         CATALOG_READINESS = :readiness,
                         MATCHED_UWI       = :uwi,
                         CATALOG_ISSUES    = :issues,
+                        FILE_TYPE_GROUP   = :type_group,
                         HEADER_EXTRACTED  = 'Y',
                         ROW_CHANGED_DATE  = GETUTCDATE()
                     WHERE INVENTORY_ID = :id
@@ -629,6 +947,9 @@ def _enrich_chunk(engine, dialect):
                         BBOX_MIN_LON=:bmin_lon, BBOX_MAX_LON=:bmax_lon,
                         EPSG_CODE=:epsg, SAMPLE_INTERVAL=:si,
                         TRACE_COUNT=:tc, SHOT_FIRST=:sf, SHOT_LAST=:sl,
+                        IL_MIN=:il_min, IL_MAX=:il_max,
+                        XL_MIN=:xl_min, XL_MAX=:xl_max,
+                        SURVEY_OUTLINE=:outline,
                         EXTRACTED_DATE=GETUTCDATE()
                     WHEN NOT MATCHED THEN INSERT (
                         SEIS_HEADER_ID,INVENTORY_ID,
@@ -636,6 +957,7 @@ def _enrich_chunk(engine, dialect):
                         CONTRACTOR,BBOX_MIN_LAT,BBOX_MAX_LAT,
                         BBOX_MIN_LON,BBOX_MAX_LON,EPSG_CODE,
                         SAMPLE_INTERVAL,TRACE_COUNT,SHOT_FIRST,SHOT_LAST,
+                        IL_MIN,IL_MAX,XL_MIN,XL_MAX,SURVEY_OUTLINE,
                         EXTRACTED_DATE,EXTRACTED_BY
                     ) VALUES (
                         :hid,:inv_id,
@@ -643,6 +965,7 @@ def _enrich_chunk(engine, dialect):
                         :contr,:bmin_lat,:bmax_lat,
                         :bmin_lon,:bmax_lon,:epsg,
                         :si,:tc,:sf,:sl,
+                        :il_min,:il_max,:xl_min,:xl_max,:outline,
                         GETUTCDATE(),'DataWrangler'
                     );
                 """), seis_params)
@@ -653,6 +976,18 @@ def _enrich_chunk(engine, dialect):
                         ROW_CHANGED_DATE=GETUTCDATE()
                     WHERE INVENTORY_ID=:id
                 """), error_params)
+            if skip_params:
+                # 'S' = deliberately skipped (too large, format limit).
+                # Never re-attempted by the extraction loop.
+                # Skip reason stored in CATALOG_READINESS so it's visible
+                # in the Browse tab without a separate column.
+                con.execute(_t("""
+                    UPDATE file_catalog.GLOBAL_FILE_CATALOG
+                    SET HEADER_EXTRACTED='S',
+                        CATALOG_READINESS='SKIPPED',
+                        ROW_CHANGED_DATE=GETUTCDATE()
+                    WHERE INVENTORY_ID=:id
+                """), skip_params)
     except Exception as e:
         st.error(f"Chunk transaction failed (rolled back): {e}")
         st.session_state["wb_enriching"] = False
@@ -670,7 +1005,7 @@ def _enrich_chunk(engine, dialect):
     pct = min(1.0, total_done / max(total_all, 1))
 
     st.progress(pct, text=(
-        f"⚙️ Enriching — {total_done:,} / {total_all:,} "
+        f"⚙️ Extracting — {total_done:,} / {total_all:,} "
         f"({pct*100:.0f}%) · {last}"
     ))
     st.caption(
@@ -702,7 +1037,7 @@ def _enrich_chunk(engine, dialect):
         time.sleep(0.1)
         st.rerun()
     else:
-        st.success(f"✅ Phase 2 complete — {total_all:,} files enriched.")
+        st.success(f"✅ Phase 2 complete — {total_all:,} files extracted.")
         st.session_state["wb_enriching"] = False
         st.session_state["wb_enrich_done"]  = True
         st.session_state["wb_enrich_total"] = total_all
@@ -713,7 +1048,58 @@ def _enrich_chunk(engine, dialect):
 # =============================================================================
 
 def _extract_fields(fpath: str, fext: str) -> dict:
-    """Extract header fields from a file. Returns flat dict."""
+    """Extract header fields from a file. Returns flat dict.
+
+    Returns a dict with skip_reason set (and all other fields at defaults)
+    when the file should be skipped rather than extracted. Callers check
+    for skip_reason before attempting any further processing. Skipped files
+    are written with HEADER_EXTRACTED='S' so they are not re-attempted.
+    """
+    # ── Size gate — check before ANY extraction attempt ───────────────────────
+    # Large files can hang extractors that parse entire file structures
+    # (openpyxl XML parse, pdfplumber on scanned PDFs). Check file size
+    # first and skip immediately if over the per-format threshold.
+    # Thresholds are conservative — legitimate petroleum data files rarely
+    # exceed these sizes for their header-only content.
+    _SIZE_LIMITS_MB = {
+        ".xlsx": 50,   # openpyxl XML parse scales with file size
+        ".xls":  50,   # xlrd same issue
+        ".xlsm": 50,
+        ".pdf":  150,  # pdfplumber slow on large scanned PDFs
+        ".docx": 100,  # python-docx is fast but guard against edge cases
+        ".doc":  100,
+        ".xml":  100,  # WITSML files with thousands of stations can be large
+        ".json": 200,  # OSDU JSON with large production volumes or log data
+    }
+    _limit_mb = _SIZE_LIMITS_MB.get(fext)
+    if _limit_mb is not None:
+        try:
+            _size_mb = Path(fpath).stat().st_size / (1024 * 1024)
+            if _size_mb > _limit_mb:
+                return {
+                    "file_category": "UNKNOWN",
+                    "report_type":   "UNKNOWN",
+                    "confidence":    0.0,
+                    "uwi": None, "well_name": None, "operator": None,
+                    "well_field": None, "state": None, "county": None,
+                    "latitude": None, "longitude": None,
+                    "total_depth": None, "spud_date": None,
+                    "rig_release": None, "survey_type": None,
+                    "contractor": None,
+                    "survey_name": None, "line_name": None,
+                    "seis_set_type": None, "survey_date": None,
+                    "bbox_min_lat": None, "bbox_max_lat": None,
+                    "bbox_min_lon": None, "bbox_max_lon": None,
+                    "epsg_code": None, "sample_interval": None,
+                    "trace_count": None, "shot_first": None,
+                    "shot_last": None,
+                    "skip_reason": (
+                        f"TOO_LARGE: {_size_mb:.1f} MB exceeds "
+                        f"{_limit_mb} MB limit for {fext}"
+                    ),
+                }
+        except OSError:
+            pass  # Can't stat — let extraction proceed and fail naturally
     fields = {
         "file_category": "UNKNOWN",
         "report_type":   "UNKNOWN",
@@ -724,6 +1110,8 @@ def _extract_fields(fpath: str, fext: str) -> dict:
         "latitude": None, "longitude": None,
         "total_depth": None, "spud_date": None,
         "rig_release": None, "survey_type": None, "contractor": None,
+        # Log curve fields — populated by LAS, DLIS, LIS, WITSML log, JSON log
+        "curve_names": [], "n_curves": 0,
         # Seis fields
         "survey_name": None, "line_name": None,
         "seis_set_type": None, "survey_date": None,
@@ -731,6 +1119,10 @@ def _extract_fields(fpath: str, fext: str) -> dict:
         "bbox_min_lon": None, "bbox_max_lon": None,
         "epsg_code": None, "sample_interval": None,
         "trace_count": None, "shot_first": None, "shot_last": None,
+        # 3D-specific geometry fields
+        "il_min": None, "il_max": None,   # inline range
+        "xl_min": None, "xl_max": None,   # crossline range
+        "survey_outline": None,            # WKT polygon of survey footprint (WGS84)
     }
 
     try:
@@ -813,23 +1205,44 @@ def _extract_fields(fpath: str, fext: str) -> dict:
         elif fext in LIS_EXTS:
             fields["file_category"] = "WELL"
             fields["report_type"]   = "WELL_LOG"
+            try:
+                from modules.lis_catalog import classify_lis
+                cl = classify_lis(fpath)
+                fields.update({
+                    "uwi":         cl.get("uwi"),
+                    "well_name":   cl.get("well_name"),
+                    "operator":    cl.get("operator"),
+                    "well_field":  cl.get("well_field"),
+                    "state":       cl.get("state"),
+                    "county":      cl.get("county"),
+                    "contractor":  cl.get("contractor"),
+                    "confidence":  float(cl.get("confidence") or 0),
+                })
+            except Exception:
+                pass
 
         elif fext in SEGY_EXTS:
             fields["file_category"] = "SEIS"
             fields["report_type"]   = "SEISMIC"
             try:
                 import segyio
+                import re as _re
+                import math as _math
+
                 with segyio.open(fpath, ignore_geometry=True) as f:
-                    fields["trace_count"]    = f.tracecount
-                    fields["sample_interval"]= f.bin[segyio.BinField.Interval]
-                    fields["seis_set_type"]  = (
-                        "3D" if f.tracecount > 10000 else "2D")
-                    # Survey name from text header
+                    n_traces = f.tracecount
+                    fields["trace_count"]     = n_traces
+                    fields["sample_interval"] = f.bin[segyio.BinField.Interval]
+                    is_3d = n_traces > 10000
+                    fields["seis_set_type"]   = "3D" if is_3d else "2D"
+
+                    # ── Text header — survey name, contractor, CRS hint ───────
+                    _utm_zone = None
+                    _epsg_hint = None
                     try:
-                        import re as _re
                         txt = segyio.tools.wrap(f.text[0])
                         m = _re.search(
-                            r"(?:LINE|SURVEY|PROJECT)[:\s]+([A-Z0-9_\-\.]+)",
+                            r"(?:LINE|SURVEY|PROJECT|NAME)[:\s]+([A-Z0-9_\-\.]+)",
                             txt, _re.IGNORECASE)
                         if m:
                             fields["survey_name"] = m.group(1).strip()[:255]
@@ -838,29 +1251,175 @@ def _extract_fields(fpath: str, fext: str) -> dict:
                             txt, _re.IGNORECASE)
                         if m2:
                             fields["contractor"] = m2.group(1).strip()[:255]
+                        # Look for CRS / EPSG / UTM hints in text header.
+                        # Common patterns: "EPSG:32614", "UTM ZONE 14N",
+                        # "COORDINATE SYSTEM: WGS84 UTM 14N"
+                        m3 = _re.search(r"EPSG[:\s]*(\d{4,6})", txt,
+                                        _re.IGNORECASE)
+                        if m3:
+                            _epsg_hint = int(m3.group(1))
+                        else:
+                            # Try to infer UTM zone from "UTM ZONE NN" or
+                            # "UTM-NN" or "UTM 14N" patterns
+                            mz = _re.search(
+                                r"UTM[_\-\s]*(?:ZONE[_\-\s]*)?(\d{1,2})\s*([NS]?)",
+                                txt, _re.IGNORECASE)
+                            if mz:
+                                zone_num = int(mz.group(1))
+                                hemi = mz.group(2).upper() or "N"
+                                # WGS84 UTM zones:
+                                # North: EPSG 32601-32660, South: 32701-32760
+                                _epsg_hint = (32600 + zone_num
+                                              if hemi != "S"
+                                              else 32700 + zone_num)
                     except Exception:
                         pass
-                    # Bbox from CDP coords
+
+                    # ── Coordinate scalar from binary header ──────────────────
+                    sf = f.bin[segyio.BinField.EnsembleScalar] or 1
+                    scale = (abs(sf) if sf < 0
+                             else 1.0 / sf if sf > 0 else 1.0)
+
+                    # ── Strided trace sampling ─────────────────────────────────
+                    # For 2D: first 200 traces capture the line well.
+                    # For 3D: stride across ALL traces so we sample the full
+                    # spatial extent, not just one corner.
+                    # Target 400 sample points — enough for a good convex hull
+                    # without reading too many trace headers.
+                    _N_SAMPLES = 400
+                    if n_traces <= _N_SAMPLES:
+                        _indices = list(range(n_traces))
+                    else:
+                        _step = max(1, n_traces // _N_SAMPLES)
+                        _indices = list(range(0, n_traces, _step))
+                        # Always include first and last trace
+                        if _indices[-1] != n_traces - 1:
+                            _indices.append(n_traces - 1)
+
+                    xs, ys = [], []
+                    il_vals, xl_vals = [], []
                     try:
-                        n = min(f.tracecount, 200)
-                        sf = f.bin[segyio.BinField.EnsembleScalar] or 1
-                        scale = (abs(sf) if sf < 0
-                                 else 1.0/sf if sf > 0 else 1.0)
-                        xs = [f.header[i][segyio.TraceField.CDP_X]*scale
-                              for i in range(n)]
-                        ys = [f.header[i][segyio.TraceField.CDP_Y]*scale
-                              for i in range(n)]
-                        xs = [x for x in xs if x != 0]
-                        ys = [y for y in ys if y != 0]
-                        if xs and ys:
-                            fields.update({
-                                "bbox_min_lon": min(xs),
-                                "bbox_max_lon": max(xs),
-                                "bbox_min_lat": min(ys),
-                                "bbox_max_lat": max(ys),
-                            })
+                        for _i in _indices:
+                            hdr = f.header[_i]
+                            x = hdr[segyio.TraceField.CDP_X] * scale
+                            y = hdr[segyio.TraceField.CDP_Y] * scale
+                            if x != 0 and y != 0:
+                                xs.append(x)
+                                ys.append(y)
+                            # Inline / crossline for 3D
+                            if is_3d:
+                                il = hdr.get(segyio.TraceField.INLINE_3D, 0)
+                                xl = hdr.get(segyio.TraceField.CROSSLINE_3D, 0)
+                                if il:
+                                    il_vals.append(il)
+                                if xl:
+                                    xl_vals.append(xl)
                     except Exception:
                         pass
+
+                    # ── Inline / crossline range (3D only) ───────────────────
+                    if is_3d and il_vals:
+                        fields["il_min"] = int(min(il_vals))
+                        fields["il_max"] = int(max(il_vals))
+                    if is_3d and xl_vals:
+                        fields["xl_min"] = int(min(xl_vals))
+                        fields["xl_max"] = int(max(xl_vals))
+
+                    if xs and ys:
+                        # ── Coordinate system detection ───────────────────────
+                        # If all X values are in [-180, 180] and Y in [-90, 90]
+                        # the coords are already geographic (WGS84 or similar).
+                        # Otherwise they are projected (UTM, state plane, etc.)
+                        # and need reprojection before storing as lat/lon.
+                        _is_geo = (
+                            all(-180 <= v <= 180 for v in xs) and
+                            all(-90  <= v <= 90  for v in ys)
+                        )
+
+                        if _is_geo:
+                            lons, lats = xs, ys
+                            if not _epsg_hint:
+                                fields["epsg_code"] = 4326
+                            else:
+                                fields["epsg_code"] = _epsg_hint
+                        else:
+                            # Projected coordinates — attempt reprojection.
+                            # Use the EPSG hint from the text header if found,
+                            # otherwise try to infer the UTM zone from the
+                            # coordinate values themselves (works for most
+                            # petroleum surveys in WGS84 UTM).
+                            lons, lats = [], []
+                            _src_epsg = _epsg_hint
+                            if not _src_epsg:
+                                # Infer UTM zone from median easting.
+                                # UTM easting is 100,000–900,000 m;
+                                # zone = floor((lon + 180) / 6) + 1.
+                                # We can reverse: median_x ≈ 500,000 (central
+                                # meridian) + (zone-1)*6 - 180 degrees offset.
+                                # Rough but works for most cases.
+                                try:
+                                    med_x = sorted(xs)[len(xs) // 2]
+                                    med_y = sorted(ys)[len(ys) // 2]
+                                    # Easting in UTM is typically 100k-900k
+                                    if 100_000 < abs(med_x) < 1_000_000:
+                                        # Deduce zone from rough longitude
+                                        approx_lon = (med_x - 500_000) / 111_320
+                                        zone = int((approx_lon + 180) / 6) + 1
+                                        zone = max(1, min(60, zone))
+                                        _src_epsg = (32600 + zone
+                                                     if med_y >= 0
+                                                     else 32700 + zone)
+                                except Exception:
+                                    pass
+
+                            if _src_epsg:
+                                fields["epsg_code"] = _src_epsg
+                                try:
+                                    from pyproj import Transformer
+                                    _tf = Transformer.from_crs(
+                                        f"EPSG:{_src_epsg}", "EPSG:4326",
+                                        always_xy=True)
+                                    for _x, _y in zip(xs, ys):
+                                        _lon, _lat = _tf.transform(_x, _y)
+                                        if (-180 <= _lon <= 180 and
+                                                -90 <= _lat <= 90):
+                                            lons.append(_lon)
+                                            lats.append(_lat)
+                                except Exception:
+                                    # pyproj not available or transform failed —
+                                    # store raw values and flag for review
+                                    lons, lats = xs, ys
+                                    fields["epsg_code"] = _src_epsg
+                            else:
+                                # Can't determine CRS — store raw and flag
+                                lons, lats = xs, ys
+
+                        if lons and lats:
+                            fields.update({
+                                "bbox_min_lon": min(lons),
+                                "bbox_max_lon": max(lons),
+                                "bbox_min_lat": min(lats),
+                                "bbox_max_lat": max(lats),
+                            })
+
+                            # ── Survey outline polygon (WKT) ──────────────────
+                            # Convex hull of the sampled points gives a good
+                            # approximation of the survey footprint for plotting.
+                            # For 2D lines this is effectively the line extent;
+                            # for 3D it's the survey polygon.
+                            # Requires shapely — skip silently if unavailable.
+                            try:
+                                from shapely.geometry import (
+                                    MultiPoint, mapping)
+                                from shapely import wkt as _swkt
+                                pts = MultiPoint(
+                                    list(zip(lons, lats)))
+                                hull = pts.convex_hull
+                                if not hull.is_empty:
+                                    fields["survey_outline"] = hull.wkt
+                            except Exception:
+                                pass
+
             except Exception:
                 pass
 
@@ -925,6 +1484,22 @@ def _extract_fields(fpath: str, fext: str) -> dict:
                         "bbox_min_lat": b.get("miny"),
                         "bbox_max_lat": b.get("maxy"),
                     })
+                # Pull sample values from DBF attribute extraction
+                sd = cl.get("sample_data", {})
+                if sd.get("sample_uwis"):
+                    fields["uwi"] = sd["sample_uwis"][0]
+                if sd.get("sample_well_names"):
+                    fields["well_name"] = sd["sample_well_names"][0]
+                if sd.get("top_operators"):
+                    fields["operator"] = sd["top_operators"][0]
+                if sd.get("sample_fields"):
+                    fields["well_field"] = sd["sample_fields"][0]
+                if sd.get("sample_surveys"):
+                    fields["survey_name"] = sd["sample_surveys"][0]
+                # Override file_category for well shapefiles
+                ft = cl.get("feature_type", "")
+                if ft == "WELL":
+                    fields["file_category"] = "WELL"
             except Exception:
                 pass
 
@@ -935,9 +1510,118 @@ def _extract_fields(fpath: str, fext: str) -> dict:
                 from modules.file_summarizer import summarize
                 s = summarize(fpath)
                 fields.update({
-                    "uwi":       s.get("uwi"),
-                    "well_name": s.get("well_name"),
+                    "uwi":        s.get("uwi"),
+                    "well_name":  s.get("well_name"),
+                    "operator":   s.get("key_fields", {}).get("operator") or
+                                  s.get("key_fields", {}).get("company"),
+                    "well_field": s.get("key_fields", {}).get("field"),
+                    "confidence": float(
+                        s.get("key_fields", {}).get("confidence") or 0),
                 })
+                # Pull report/doc type — check sheet_detail for known schema
+                # names (BOEM_BOREHOLE, KGS_WELL etc.) first, then fall back
+                # to generic table_type / doc_type.
+                _sheet_detail = s.get("key_fields", {}).get("sheet_detail", [])
+                _schema = (_sheet_detail[0].get("table_type")
+                           if _sheet_detail else None)
+                rt = (_schema or
+                      s.get("key_fields", {}).get("report_type") or
+                      s.get("key_fields", {}).get("doc_type") or
+                      s.get("key_fields", {}).get("table_type"))
+                if rt and rt not in ("UNKNOWN", "OTHER"):
+                    fields["report_type"] = str(rt)[:50]
+            except Exception:
+                pass
+
+        elif fext in WITSML_EXTS:
+            # WITSML 1.3.1 / 1.4.1 — trajectory, log, mudLog, well, wellbore.
+            # Gate: only process files that declare the WITSML namespace to
+            # avoid parsing unrelated XML (config files, SVG, RSS, etc.).
+            try:
+                # Cheap namespace check — read first 500 bytes only.
+                _witsml_sig = b"witsml.org/schemas"
+                with open(fpath, "rb") as _wf:
+                    _head = _wf.read(500)
+                if _witsml_sig not in _head:
+                    fields["file_category"] = "OTHER"
+                    fields["report_type"]   = "XML_OTHER"
+                else:
+                    from modules.witsml_catalog import classify_witsml
+                    cl = classify_witsml(fpath)
+                    fields["file_category"] = cl.get("file_category", "WELL")
+                    fields["report_type"]   = cl.get("report_type", "WITSML")
+                    fields.update({
+                        "uwi":        cl.get("uwi"),
+                        "well_name":  cl.get("well_name"),
+                        "operator":   cl.get("operator"),
+                        "contractor": cl.get("contractor"),
+                        "well_field": cl.get("well_field"),
+                        "state":      cl.get("state"),
+                        "county":     cl.get("county"),
+                        "spud_date":  cl.get("spud_date"),
+                        "total_depth":cl.get("total_depth"),
+                        "confidence": float(cl.get("confidence") or 0),
+                    })
+                    # Curve names for log objects
+                    if cl.get("curve_names"):
+                        fields["curve_names"] = cl["curve_names"]
+                        fields["n_curves"]    = cl.get("n_curves", 0)
+            except Exception:
+                pass
+
+        elif fext in JSON_LOG_EXTS:
+            # OSDU WellLog / Well / WellboreMarkerSet / PressureData /
+            # SeismicAcquisitionSurvey and JSON Well Log Format (JSONWLF).
+            # Gate: only process files that look like petroleum JSON to
+            # avoid parsing unrelated JSON (config, GeoJSON already handled
+            # by SHP_EXTS as .geojson, package.json, etc.).
+            try:
+                import json as _json
+                with open(fpath, "r", encoding="utf-8-sig",
+                          errors="replace") as _jf:
+                    _head_text = _jf.read(512)
+                # Must have either an OSDU 'kind' field or known JSONWLF keys
+                _looks_petroleum = (
+                    '"kind"' in _head_text or
+                    '"header"' in _head_text or
+                    '"WellLog"' in _head_text or
+                    '"wellbore"' in _head_text.lower()
+                )
+                if not _looks_petroleum:
+                    fields["file_category"] = "OTHER"
+                    fields["report_type"]   = "JSON_OTHER"
+                else:
+                    from modules.json_well_log_catalog import classify_json_well_log
+                    cl = classify_json_well_log(fpath)
+                    fields["file_category"] = cl.get("file_category", "WELL")
+                    fields["report_type"]   = cl.get("report_type", "JSON_LOG")
+                    fields.update({
+                        "uwi":        cl.get("uwi"),
+                        "well_name":  cl.get("well_name"),
+                        "operator":   cl.get("operator"),
+                        "contractor": cl.get("contractor"),
+                        "well_field": cl.get("well_field"),
+                        "state":      cl.get("state"),
+                        "county":     cl.get("county"),
+                        "spud_date":  cl.get("spud_date"),
+                        "total_depth":cl.get("total_depth"),
+                        "confidence": float(cl.get("confidence") or 0),
+                    })
+                    # Seismic surveys — route bbox to seis fields
+                    if cl.get("file_category") == "SEIS":
+                        fields.update({
+                            "survey_name":  cl.get("survey_name"),
+                            "seis_set_type":cl.get("seis_set_type"),
+                            "bbox_min_lat": cl.get("bbox_min_lat"),
+                            "bbox_max_lat": cl.get("bbox_max_lat"),
+                            "bbox_min_lon": cl.get("bbox_min_lon"),
+                            "bbox_max_lon": cl.get("bbox_max_lon"),
+                            "epsg_code":    cl.get("epsg_code"),
+                        })
+                    # Curve names for log objects
+                    if cl.get("curve_names"):
+                        fields["curve_names"] = cl["curve_names"]
+                        fields["n_curves"]    = cl.get("n_curves", 0)
             except Exception:
                 pass
 
@@ -1061,6 +1745,9 @@ def _write_enrichment_on(con, inv_id: str, fields: dict):
                 BBOX_MIN_LON=:bmin_lon, BBOX_MAX_LON=:bmax_lon,
                 EPSG_CODE=:epsg, SAMPLE_INTERVAL=:si,
                 TRACE_COUNT=:tc, SHOT_FIRST=:sf, SHOT_LAST=:sl,
+                IL_MIN=:il_min, IL_MAX=:il_max,
+                XL_MIN=:xl_min, XL_MAX=:xl_max,
+                SURVEY_OUTLINE=:outline,
                 EXTRACTED_DATE=GETUTCDATE()
             WHEN NOT MATCHED THEN INSERT (
                 SEIS_HEADER_ID,INVENTORY_ID,
@@ -1068,6 +1755,7 @@ def _write_enrichment_on(con, inv_id: str, fields: dict):
                 CONTRACTOR,BBOX_MIN_LAT,BBOX_MAX_LAT,
                 BBOX_MIN_LON,BBOX_MAX_LON,EPSG_CODE,
                 SAMPLE_INTERVAL,TRACE_COUNT,SHOT_FIRST,SHOT_LAST,
+                IL_MIN,IL_MAX,XL_MIN,XL_MAX,SURVEY_OUTLINE,
                 EXTRACTED_DATE,EXTRACTED_BY
             ) VALUES (
                 :hid,:inv_id,
@@ -1075,6 +1763,7 @@ def _write_enrichment_on(con, inv_id: str, fields: dict):
                 :contr,:bmin_lat,:bmax_lat,
                 :bmin_lon,:bmax_lon,:epsg,
                 :si,:tc,:sf,:sl,
+                :il_min,:il_max,:xl_min,:xl_max,:outline,
                 GETUTCDATE(),'DataWrangler'
             );
         """), {
@@ -1093,6 +1782,11 @@ def _write_enrichment_on(con, inv_id: str, fields: dict):
             "tc":       _safe_trace_count(fields.get("trace_count")),
             "sf":       _trunc(fields.get("shot_first"),20),
             "sl":       _trunc(fields.get("shot_last"),20),
+            "il_min":   fields.get("il_min"),
+            "il_max":   fields.get("il_max"),
+            "xl_min":   fields.get("xl_min"),
+            "xl_max":   fields.get("xl_max"),
+            "outline":  fields.get("survey_outline"),
         })
 
 
@@ -1308,16 +2002,16 @@ def _wb_nav(engine, dialect, df):
         st.session_state.pop("wb_results", None)
         st.rerun()
 
-    if a2.button("🔄 Re-enrich", key="wb_reenrich"):
-        with st.spinner("Enriching..."):
+    if a2.button("🔄 Re-extract", key="wb_reenrich"):
+        with st.spinner("Extracting..."):
             try:
                 fields = _extract_fields(fpath, fext)
                 _write_enrichment(engine, inv_id, fields)
-                st.success("Re-enriched.")
+                st.success("Re-extracted.")
                 st.session_state.pop("wb_results", None)
                 st.rerun()
             except Exception as e:
-                st.error(f"Re-enrich failed: {e}")
+                st.error(f"Re-extract failed: {e}")
 
     # Download
     if Path(fpath).exists():
@@ -1407,7 +2101,7 @@ def _show_header_attrs(engine, inv_id: str, row):
                     st.dataframe(adf, hide_index=True,
                                  use_container_width=True)
         else:
-            st.caption("No header extracted yet — click Re-enrich.")
+            st.caption("No header extracted yet — click Re-extract.")
     except Exception as e:
         st.caption(f"Header lookup: {e}")
 
@@ -1718,7 +2412,7 @@ def _tab_map(engine, dialect):
     if not well_rows:
         st.warning(
             "No wells with coordinates found. "
-            "Run Phase 2 enrichment first."
+            "Run Phase 2 extraction first."
         )
         return
 
@@ -1989,11 +2683,11 @@ def _tab_headers(engine, dialect):
             except Exception as e:
                 st.error(f"Query failed: {e}")
                 st.caption(
-                    "Run Phase 2 enrichment to populate FILE_WELL_HEADER.")
+                    "Run Phase 2 extraction to populate FILE_WELL_HEADER.")
 
         df = st.session_state.get("wh2_df")
         if df is None:
-            st.info("Click Query. Run Phase 2 enrichment if empty.")
+            st.info("Click Query. Run Phase 2 extraction if empty.")
         else:
             m1,m2,m3 = st.columns(3)
             m1.metric("Files",       len(df))
@@ -2056,11 +2750,11 @@ def _tab_headers(engine, dialect):
             except Exception as e:
                 st.error(f"Query failed: {e}")
                 st.caption(
-                    "Run Phase 2 enrichment to populate FILE_SEIS_HEADER.")
+                    "Run Phase 2 extraction to populate FILE_SEIS_HEADER.")
 
         df = st.session_state.get("sh2_df")
         if df is None:
-            st.info("Click Query. Run Phase 2 enrichment if empty.")
+            st.info("Click Query. Run Phase 2 extraction if empty.")
         else:
             m1,m2,m3 = st.columns(3)
             m1.metric("Seismic files", len(df))

@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "42-317-10001-0000",
+    "FacilityName": "Heritage 18-43H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "42-317-10001-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "423171000100",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Heritage 18-43H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Pioneer Natural Resources",
+    "OperatorID": "osdu:master-data--Organisation:pioneer-natural-resources",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+    "County": "Martin",
+    "WellStatus": "Producing",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:PRODUCING",
+    "SpudDate": "2018-02-17",
+    "DrillingCompletion": "2018-04-11",
+    "InitialCompletionDate": "2018-06-04",
+    "OriginalOperator": "Pioneer Natural Resources",
+    "Field": "Midland Basin",
+    "FormationAtTotalDepth": "Bone Spring",
+    "DrillersTotalDepth": 17279,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "NE/4 NW/4",
+    "Section": 18,
+    "Township": 4,
+    "Range": 4,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 31.486939,
+          "Longitude": -102.124925
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -102.124925,
+                  31.486939,
+                  3361.2
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:42317100010000-WB01",
+        "WellboreName": "Heritage 18-43H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3361.2,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

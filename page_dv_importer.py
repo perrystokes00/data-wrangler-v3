@@ -503,13 +503,12 @@ def render(engine=None):
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # ── Section 0: Bulk Region Loaders (GOM, etc.) ────────────────────
+    # ── Section 0: Bulk Region / Format Loaders ──────────────────────
     # Purpose-built bulk loaders for source-shaped data that doesn't go
-    # through the generic column-mapping workflow below. Add new region
-    # loaders here as they're built (Permian, KGS, BLM, RRC, etc.).
+    # through the generic column-mapping workflow below.
     # Collapsed by default — the column-mapping workflow remains the
     # primary path for ad-hoc CSV/Excel imports.
-    with st.expander("🌊 0 · Bulk Region Loaders", expanded=False):
+    with st.expander("🌊 0 · Bulk Loaders — GOM", expanded=False):
         try:
             import page_import_gom
             page_import_gom.render(engine)
@@ -519,8 +518,6 @@ def render(engine=None):
         st.divider()
 
         # GOM directional survey loader — BOEM Azimuth fixed-width file.
-        # Sibling of the well header loader above; loads survey stations
-        # into dataview_gom.directional_survey_point.
         try:
             import page_import_gom_dir_srvy
             page_import_gom_dir_srvy.render(engine)
@@ -529,6 +526,23 @@ def render(engine=None):
                 f"GOM directional survey loader unavailable: "
                 f"{type(e).__name__}: {e}"
             )
+
+    # WITSML and OSDU loaders each get their own top-level expander —
+    # Streamlit does not allow expanders nested inside other expanders,
+    # and these loaders use st.info / st.warning / st.caption internally.
+    with st.expander("📐 0b · WITSML Loader", expanded=False):
+        try:
+            import page_import_witsml
+            page_import_witsml.render(engine)
+        except Exception as e:
+            st.error(f"WITSML loader unavailable: {type(e).__name__}: {e}")
+
+    with st.expander("🌐 0c · OSDU JSON Loader", expanded=False):
+        try:
+            import page_import_osdu
+            page_import_osdu.render(engine)
+        except Exception as e:
+            st.error(f"OSDU loader unavailable: {type(e).__name__}: {e}")
 
     st.divider()
 

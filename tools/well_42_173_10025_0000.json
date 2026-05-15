@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "42-173-10025-0000",
+    "FacilityName": "Federal 28-2B1H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "42-173-10025-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "421731002500",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Federal 28-2B1H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Permian Resources",
+    "OperatorID": "osdu:master-data--Organisation:permian-resources",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+    "County": "Glasscock",
+    "WellStatus": "TA",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:TA",
+    "SpudDate": "2022-12-08",
+    "DrillingCompletion": "2023-02-15",
+    "InitialCompletionDate": "2023-04-02",
+    "OriginalOperator": "Permian Resources",
+    "Field": "Midland Basin",
+    "FormationAtTotalDepth": "Spraberry",
+    "DrillersTotalDepth": 15592,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "N/2 SW/4",
+    "Section": 28,
+    "Township": 2,
+    "Range": 11,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 32.119754,
+          "Longitude": -102.319484
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -102.319484,
+                  32.119754,
+                  2927.3
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:42173100250000-WB01",
+        "WellboreName": "Federal 28-2B1H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 2927.3,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

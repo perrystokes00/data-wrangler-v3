@@ -177,6 +177,7 @@ def classify_shapefile(file_path: str) -> dict:
         "crs_epsg":       None,
         "attributes":     [],
         "column_map":     {},  # detected PPDM column → source column
+        "sample_data":    {},  # actual values extracted from DBF columns
         "confidence":     0.0,
         "error":          None,
         "bounds":         None,
@@ -221,6 +222,65 @@ def classify_shapefile(file_path: str) -> dict:
                         break
 
         result["column_map"] = col_map
+
+        # ── Sample attribute values from matched DBF columns ──────────────────
+        # Now that we know which columns hold which PPDM fields, pull a
+        # representative sample of actual values. gdf already has 10 rows.
+        sample_data: dict = {}
+
+        if "UWI" in col_map:
+            vals = gdf[col_map["UWI"]].dropna().astype(str).str.strip()
+            sample_data["sample_uwis"] = [v for v in vals if v][:5]
+
+        if "WELL_NAME" in col_map:
+            vals = gdf[col_map["WELL_NAME"]].dropna().astype(str).str.strip()
+            sample_data["sample_well_names"] = [v for v in vals if v][:5]
+
+        if "OPERATOR" in col_map:
+            # Use the full dataset for operators to get the dominant names
+            try:
+                full_ops = gpd.read_file(
+                    file_path, include_fields=[col_map["OPERATOR"]])
+                ops = (full_ops[col_map["OPERATOR"]]
+                       .dropna().astype(str).str.strip()
+                       .replace("", None).dropna()
+                       .value_counts().head(5).index.tolist())
+                sample_data["top_operators"] = ops
+            except Exception:
+                vals = gdf[col_map["OPERATOR"]].dropna().astype(str).str.strip()
+                sample_data["top_operators"] = [v for v in vals if v][:5]
+
+        if "FIELD_NAME" in col_map:
+            vals = gdf[col_map["FIELD_NAME"]].dropna().astype(str).str.strip()
+            sample_data["sample_fields"] = [v for v in vals if v][:5]
+
+        if "SURVEY_NAME" in col_map:
+            vals = gdf[col_map["SURVEY_NAME"]].dropna().astype(str).str.strip()
+            sample_data["sample_surveys"] = [v for v in vals if v][:5]
+
+        if "STATUS" in col_map:
+            vals = gdf[col_map["STATUS"]].dropna().astype(str).str.strip()
+            unique_statuses = list(dict.fromkeys(v for v in vals if v))
+            sample_data["statuses"] = unique_statuses[:10]
+
+        # Date range for spud / completion dates using full dataset
+        for date_key in ("SPUD_DATE", "COMPLETION_DATE"):
+            if date_key in col_map:
+                try:
+                    import pandas as pd
+                    full_d = gpd.read_file(
+                        file_path, include_fields=[col_map[date_key]])
+                    dates = pd.to_datetime(
+                        full_d[col_map[date_key]], errors="coerce").dropna()
+                    if len(dates):
+                        sample_data[f"{date_key.lower()}_range"] = (
+                            f"{dates.min().strftime('%Y-%m-%d')} – "
+                            f"{dates.max().strftime('%Y-%m-%d')}"
+                        )
+                except Exception:
+                    pass
+
+        result["sample_data"] = sample_data
 
         # ── Feature type classification ───────────────────────────────────────
         has_uwi     = "UWI"       in col_map

@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "05-005-10062-0000",
+    "FacilityName": "Williston 8-83H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "05-005-10062-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "050051006200",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Williston 8-83H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Noble Energy",
+    "OperatorID": "osdu:master-data--Organisation:noble-energy",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:CO",
+    "County": "Arapahoe",
+    "WellStatus": "Shut-in",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:SHUT_IN",
+    "SpudDate": "2021-02-16",
+    "DrillingCompletion": "2021-04-15",
+    "InitialCompletionDate": "2021-05-21",
+    "OriginalOperator": "Noble Energy",
+    "Field": "DJ Basin",
+    "FormationAtTotalDepth": "Niobrara B",
+    "DrillersTotalDepth": 7583,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "SE/4 NE/4",
+    "Section": 8,
+    "Township": 8,
+    "Range": 2,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 40.863997,
+          "Longitude": -104.034495
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -104.034495,
+                  40.863997,
+                  3126.6
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:05005100620000-WB01",
+        "WellboreName": "Williston 8-83H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3126.6,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:CO",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

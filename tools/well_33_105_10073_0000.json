@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "33-105-10073-0000",
+    "FacilityName": "Williston 24-2A1H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "33-105-10073-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "331051007300",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Williston 24-2A1H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Whiting Petroleum",
+    "OperatorID": "osdu:master-data--Organisation:whiting-petroleum",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:ND",
+    "County": "Williams",
+    "WellStatus": "TA",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:TA",
+    "SpudDate": "2024-11-10",
+    "DrillingCompletion": "2025-02-14",
+    "InitialCompletionDate": "2025-03-23",
+    "OriginalOperator": "Whiting Petroleum",
+    "Field": "Williston Basin",
+    "FormationAtTotalDepth": "Bakken",
+    "DrillersTotalDepth": 11780,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "SE/4 NE/4",
+    "Section": 24,
+    "Township": 2,
+    "Range": 13,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 48.598702,
+          "Longitude": -102.050907
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -102.050907,
+                  48.598702,
+                  3729.1
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:33105100730000-WB01",
+        "WellboreName": "Williston 24-2A1H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3729.1,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:ND",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

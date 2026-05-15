@@ -139,8 +139,46 @@ def _summarize_dlis(file_path: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SEG-Y
+# LIS
 # ══════════════════════════════════════════════════════════════════════════════
+def _summarize_lis(file_path: str) -> dict:
+    s = _base(file_path, "LIS")
+    try:
+        from modules.lis_catalog import classify_lis
+        cl = classify_lis(file_path)
+
+        s["well_name"] = cl.get("well_name")
+        s["uwi"]       = cl.get("uwi")
+
+        s["description"] = cl.get("description", "LIS file")
+        s["key_fields"]  = {
+            "well_name":   cl.get("well_name"),
+            "uwi":         cl.get("uwi"),
+            "operator":    cl.get("operator"),
+            "field":       cl.get("well_field"),
+            "state":       cl.get("state"),
+            "county":      cl.get("county"),
+            "contractor":  cl.get("contractor"),
+            "depth_start": cl.get("depth_start"),
+            "depth_stop":  cl.get("depth_stop"),
+            "curves":      cl.get("n_curves", 0),
+            "curve_names": cl.get("curve_names", []),
+            "frames":      cl.get("n_frames", 0),
+            "confidence":  cl.get("confidence", 0.0),
+            "via_dlisio":  cl.get("via_dlisio", False),
+        }
+        s["ppdm_hints"] = ["dbo.WELL_LOG_SAMPLE", "dbo.WELL"]
+
+        if not s["uwi"]:
+            s["warnings"].append("No UWI/API found in LIS header")
+        if cl.get("n_curves", 0) == 0:
+            s["warnings"].append("No curve mnemonics extracted — file may be non-standard")
+        if cl.get("error"):
+            s["warnings"].append(f"Extraction note: {cl['error']}")
+
+    except Exception as e:
+        s["error"] = str(e)
+    return s
 def _summarize_segy(file_path: str) -> dict:
     s = _base(file_path, "SEG-Y")
     try:
@@ -239,8 +277,8 @@ def _summarize_shp(file_path: str) -> dict:
         import geopandas as gpd
         from modules.shapefile_catalog import classify_shapefile
 
-        cl = classify_shapefile(file_path)
-        gdf = gpd.read_file(file_path, rows=1)
+        cl  = classify_shapefile(file_path)
+        gdf = gpd.read_file(file_path, rows=10)
 
         n       = cl.get("feature_count", 0)
         geom    = cl.get("geometry_type", "?")
@@ -248,6 +286,72 @@ def _summarize_shp(file_path: str) -> dict:
         cols    = cl.get("attributes", [])
         ft      = cl.get("feature_type", "?")
         bounds  = cl.get("bounds") or {}
+        col_map = cl.get("column_map", {})
+
+        # ── Extract sample values from matched DBF columns ────────────────────
+        sample_values: dict = {}
+
+        # UWIs / well IDs
+        if "UWI" in col_map:
+            uwi_col = col_map["UWI"]
+            if uwi_col in gdf.columns:
+                vals = gdf[uwi_col].dropna().astype(str).tolist()
+                sample_values["sample_uwis"] = [v for v in vals if v.strip()][:5]
+                s["uwi"] = sample_values["sample_uwis"][0] \
+                    if sample_values["sample_uwis"] else None
+
+        # Well names
+        if "WELL_NAME" in col_map:
+            wn_col = col_map["WELL_NAME"]
+            if wn_col in gdf.columns:
+                vals = gdf[wn_col].dropna().astype(str).tolist()
+                sample_values["sample_well_names"] = [v for v in vals if v.strip()][:5]
+                s["well_name"] = sample_values["sample_well_names"][0] \
+                    if sample_values["sample_well_names"] else None
+
+        # Operators — load more rows to get a representative list
+        if "OPERATOR" in col_map:
+            op_col = col_map["OPERATOR"]
+            try:
+                full = gpd.read_file(file_path,
+                                     include_fields=[op_col])
+                ops = (full[op_col].dropna()
+                                    .astype(str)
+                                    .str.strip()
+                                    .replace("", None)
+                                    .dropna()
+                                    .value_counts()
+                                    .head(5)
+                                    .index.tolist())
+                sample_values["top_operators"] = ops
+            except Exception:
+                pass
+
+        # Field names
+        if "FIELD_NAME" in col_map:
+            fn_col = col_map["FIELD_NAME"]
+            if fn_col in gdf.columns:
+                vals = gdf[fn_col].dropna().astype(str).tolist()
+                sample_values["sample_fields"] = [v for v in vals if v.strip()][:5]
+
+        # Date columns — extract range
+        for date_key in ("SPUD_DATE", "COMPLETION_DATE"):
+            if date_key in col_map:
+                d_col = col_map[date_key]
+                if d_col in gdf.columns:
+                    try:
+                        import pandas as pd
+                        full_d = gpd.read_file(file_path,
+                                               include_fields=[d_col])
+                        dates = pd.to_datetime(
+                            full_d[d_col], errors="coerce").dropna()
+                        if len(dates):
+                            sample_values[f"{date_key.lower()}_range"] = (
+                                f"{dates.min().strftime('%Y-%m-%d')} – "
+                                f"{dates.max().strftime('%Y-%m-%d')}"
+                            )
+                    except Exception:
+                        pass
 
         s["description"] = (
             f"Shapefile · {n:,} {geom} features · {ft.replace('_',' ')}"
@@ -259,8 +363,10 @@ def _summarize_shp(file_path: str) -> dict:
             "feature_type":  ft,
             "crs_epsg":      crs,
             "attributes":    cols[:10],
+            "column_map":    col_map,
             "bounds":        bounds,
             "confidence":    cl.get("confidence", 0),
+            **sample_values,
         }
         s["ppdm_hints"] = [cl.get("ppdm_target")] if cl.get("ppdm_target") else []
 
@@ -352,13 +458,66 @@ def _classify_excel_sheet(headers: list[str]) -> tuple[str, float]:
     return best_type, round(best_score, 2)
 
 
+# Known fixed-schema file patterns — checked before the generic column
+# classifier so files with well-known structures get a precise classification.
+KNOWN_SCHEMAS = {
+    "BOEM_BOREHOLE": {
+        "required": ["api well number", "well name", "bottom lease number",
+                     "water depth"],
+        "ppdm": "dbo.WELL",
+        "description": "BOEM Gulf of Mexico Borehole Data",
+    },
+    "BOEM_WELL": {
+        "required": ["api well number", "spud date", "status code",
+                     "surface latitude"],
+        "ppdm": "dbo.WELL",
+        "description": "BOEM Well Header Data",
+    },
+    "KGS_WELL": {
+        "required": ["api_number", "lease_name", "township", "range"],
+        "ppdm": "dbo.WELL",
+        "description": "Kansas Geological Survey Well Data",
+    },
+    "RRC_WELL": {
+        "required": ["api14", "operator_name", "county_name", "district"],
+        "ppdm": "dbo.WELL",
+        "description": "Texas RRC Well Data",
+    },
+}
+
+
+def _detect_known_schema(headers_lower: list) -> tuple | None:
+    """Match column headers against known fixed schemas.
+
+    Returns (schema_name, ppdm_target) when ALL required columns for a
+    schema are found (case-insensitive substring match), else None.
+    """
+    for schema_name, cfg in KNOWN_SCHEMAS.items():
+        if all(any(req in h for h in headers_lower)
+               for req in cfg["required"]):
+            return schema_name, cfg["ppdm"]
+    return None
+
+
 def _summarize_excel(file_path: str) -> dict:
     s = _base(file_path, "Excel")
     try:
         import openpyxl
         import pandas as pd
 
-        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        # ── Single-pass streaming read ─────────────────────────────────────
+        # openpyxl read_only + iter_rows() streams the XML row by row and
+        # stops as soon as we break. This means a 50,000-row or 4-million-
+        # row file reads exactly as fast as a 10-row file for our purposes —
+        # we only need the header row and a handful of data rows.
+        #
+        # The previous approach called pd.read_excel(..., nrows=5) per sheet,
+        # which re-opens and re-parses the entire worksheet XML on every call
+        # regardless of nrows. On dense files this caused multi-minute hangs.
+        _MAX_SAMPLE_ROWS = 5   # data rows to read for UWI / value sampling
+
+        wb = openpyxl.load_workbook(
+            file_path, read_only=True, data_only=True)
         sheets = wb.sheetnames
 
         sheet_summaries = []
@@ -368,59 +527,62 @@ def _summarize_excel(file_path: str) -> dict:
 
         for sheet_name in sheets:
             try:
-                # Read just headers and first few rows
-                df = pd.read_excel(
-                    file_path, sheet_name=sheet_name,
-                    nrows=5, engine='openpyxl'
-                )
-                if df.empty or len(df.columns) < 2:
+                ws = wb[sheet_name]
+
+                # ── Stream header + first N data rows ──────────────────────
+                header_row  = None
+                sample_rows = []
+                for i, row in enumerate(ws.iter_rows(values_only=True)):
+                    if i == 0:
+                        header_row = [str(c) if c is not None else ""
+                                      for c in row]
+                    else:
+                        sample_rows.append(row)
+                        if len(sample_rows) >= _MAX_SAMPLE_ROWS:
+                            break
+
+                if not header_row or len(header_row) < 2:
                     continue
 
-                headers      = [str(c) for c in df.columns]
-                table_type, conf = _classify_excel_sheet(headers)
+                headers       = header_row
+                headers_lower = [h.lower().strip() for h in headers]
 
-                # Get full row count
-                ws        = wb[sheet_name]
-                n_rows    = ws.max_row - 1  # subtract header
-                total_rows += max(0, n_rows)
+                # Row count — ws.max_row is reliable in read_only mode
+                n_rows    = max(0, (ws.max_row or 1) - 1)
+                total_rows += n_rows
 
-                # Try to find UWI in data
+                # ── Schema detection: known fixed schemas first ─────────────
+                known = _detect_known_schema(headers_lower)
+                if known:
+                    schema_name, ppdm = known
+                    table_type = schema_name
+                    conf       = 1.0
+                else:
+                    table_type, conf = _classify_excel_sheet(headers)
+                    ppdm = EXCEL_TABLE_TYPES.get(
+                        table_type, {}).get("ppdm", "")
+
+                # ── UWI from sample rows ────────────────────────────────────
                 if not uwi_found:
-                    for col in headers:
+                    for col_i, col in enumerate(headers):
                         if any(x in col.lower() for x in
-                               ['uwi','api','well_id']):
-                            try:
-                                df2 = pd.read_excel(
-                                    file_path, sheet_name=sheet_name,
-                                    nrows=2, engine='openpyxl'
-                                )
-                                if not df2[col].empty:
-                                    uwi_found = str(df2[col].iloc[0])
-                            except Exception:
-                                pass
+                               ["uwi", "api", "well_id", "api well number"]):
+                            for row in sample_rows:
+                                if col_i < len(row) and row[col_i]:
+                                    uwi_found = str(row[col_i]).strip()
+                                    if uwi_found:
+                                        break
+                            if uwi_found:
+                                break
 
-                # Date range for production/time series
+                # ── Date range — flag presence only, no full-column read ───
                 date_range = ""
                 for col in headers:
-                    if any(x in col.lower() for x in ['date','month','year']):
-                        try:
-                            df3 = pd.read_excel(
-                                file_path, sheet_name=sheet_name,
-                                usecols=[col], engine='openpyxl'
-                            )
-                            dates = pd.to_datetime(df3[col],
-                                    errors='coerce').dropna()
-                            if len(dates) > 0:
-                                date_range = (
-                                    f"{dates.min().strftime('%Y-%m')} – "
-                                    f"{dates.max().strftime('%Y-%m')}"
-                                )
-                        except Exception:
-                            pass
+                    if any(x in col.lower()
+                           for x in ["date", "month", "year"]):
+                        date_range = "date column present"
                         break
 
-                ppdm = EXCEL_TABLE_TYPES.get(
-                    table_type, {}).get("ppdm","")
                 if ppdm:
                     all_ppdm.append(ppdm)
 
@@ -453,7 +615,7 @@ def _summarize_excel(file_path: str) -> dict:
             "total_rows":   total_rows,
             "sheet_detail": sheet_summaries,
         }
-        s["ppdm_hints"] = list(dict.fromkeys(all_ppdm))  # dedup, keep order
+        s["ppdm_hints"] = list(dict.fromkeys(all_ppdm))
 
         if total_rows == 0:
             s["warnings"].append("No data rows found — file may be empty")
@@ -463,28 +625,6 @@ def _summarize_excel(file_path: str) -> dict:
     except Exception as e:
         s["error"] = str(e)
     return s
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Word
-# ══════════════════════════════════════════════════════════════════════════════
-
-WORD_DOC_TYPES = {
-    "COMPLETION_REPORT":  ["completion","perforation","frac","stimulation",
-                           "proppant","wellbore"],
-    "GEOLOGICAL_REPORT":  ["formation","geology","geological","lithology",
-                           "stratigraph","pay zone","net pay"],
-    "DST_REPORT":         ["drill stem test","dst","pressure buildup",
-                           "shut-in","flow rate","bhp","isip"],
-    "WELL_PROPOSAL":      ["afe","authorization","proposed well",
-                           "prognosis","objective"],
-    "REGULATORY":         ["permit","regulatory","state","commission",
-                           "railroad","compliance","notif"],
-    "FORMATION_TOPS":     ["formation tops","top of","base of",
-                           "picked at","marker"],
-    "HSE_REPORT":         ["safety","incident","hse","near miss",
-                           "hazard","injury"],
-}
 
 
 def _summarize_docx(file_path: str) -> dict:
@@ -675,6 +815,180 @@ def _summarize_p190(file_path: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# WITSML
+# ══════════════════════════════════════════════════════════════════════════════
+def _summarize_witsml(file_path: str) -> dict:
+    s = _base(file_path, "WITSML")
+    try:
+        # Cheap namespace gate — don't parse non-WITSML XML
+        with open(file_path, "rb") as fh:
+            head = fh.read(500)
+        if b"witsml.org/schemas" not in head:
+            s["description"] = "XML file — not WITSML (no witsml.org namespace)"
+            s["warnings"].append("Not a WITSML file — namespace not found in first 500 bytes")
+            return s
+
+        from modules.witsml_catalog import classify_witsml
+        cl = classify_witsml(file_path)
+
+        s["well_name"] = cl.get("well_name")
+        s["uwi"]       = cl.get("uwi")
+        s["description"] = cl.get("description", "WITSML file")
+
+        obj_type = cl.get("object_type", "unknown")
+        s["key_fields"] = {
+            "witsml_version":  cl.get("witsml_version"),
+            "object_type":     obj_type,
+            "n_objects":       cl.get("n_objects", 0),
+            "well_name":       cl.get("well_name"),
+            "uwi":             cl.get("uwi"),
+            "operator":        cl.get("operator"),
+            "contractor":      cl.get("contractor"),
+            "depth_start":     cl.get("depth_start"),
+            "depth_stop":      cl.get("depth_stop"),
+            "confidence":      cl.get("confidence", 0.0),
+        }
+
+        # Object-type-specific fields
+        if obj_type == "trajectory":
+            s["key_fields"]["n_stations"] = cl.get("n_stations", 0)
+            s["key_fields"]["survey_type"] = cl.get("survey_type")
+            s["ppdm_hints"] = ["dbo.WELL_DIR_SURVEY", "dbo.WELL_DIR_SRVY_STATION"]
+        elif obj_type == "log":
+            s["key_fields"]["n_curves"]    = cl.get("n_curves", 0)
+            s["key_fields"]["curve_names"] = cl.get("curve_names", [])
+            s["ppdm_hints"] = ["dbo.WELL_LOG", "dbo.WELL_LOG_SAMPLE"]
+        elif obj_type == "mudlog":
+            s["key_fields"]["n_intervals"] = cl.get("n_intervals", 0)
+            s["key_fields"]["gas_shows"]   = cl.get("gas_shows", [])
+            s["ppdm_hints"] = ["dbo.WELL_LOG_SAMPLE"]
+        else:
+            s["ppdm_hints"] = ["dbo.WELL"]
+
+        if cl.get("error"):
+            s["warnings"].append(f"Extraction note: {cl['error']}")
+
+    except Exception as e:
+        s["error"] = str(e)
+    return s
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JSON Well Log / OSDU
+# ══════════════════════════════════════════════════════════════════════════════
+def _summarize_json_well_log(file_path: str) -> dict:
+    s = _base(file_path, "JSON Well Log")
+    try:
+        # Cheap petroleum gate — skip non-petroleum JSON
+        with open(file_path, "r", encoding="utf-8-sig", errors="replace") as fh:
+            head_text = fh.read(512)
+        _looks_petroleum = (
+            '"kind"' in head_text or
+            '"header"' in head_text or
+            '"WellLog"' in head_text or
+            '"wellbore"' in head_text.lower()
+        )
+        if not _looks_petroleum:
+            s["description"] = "JSON file — not a recognised petroleum format"
+            s["warnings"].append("No OSDU 'kind' or JSONWLF 'header' found in first 512 bytes")
+            return s
+
+        from modules.json_well_log_catalog import classify_json_well_log
+        cl = classify_json_well_log(file_path)
+
+        s["well_name"] = cl.get("well_name")
+        s["uwi"]       = cl.get("uwi")
+        s["description"] = cl.get("description", "JSON petroleum file")
+
+        schema = cl.get("json_schema", "unknown")
+        s["key_fields"] = {
+            "json_schema":  schema,
+            "report_type":  cl.get("report_type"),
+            "well_name":    cl.get("well_name"),
+            "uwi":          cl.get("uwi"),
+            "operator":     cl.get("operator"),
+            "contractor":   cl.get("contractor"),
+            "depth_start":  cl.get("depth_start"),
+            "depth_stop":   cl.get("depth_stop"),
+            "confidence":   cl.get("confidence", 0.0),
+        }
+
+        # Schema-specific additions
+        if schema in ("osdu_well", "osdu_wellbore", "osdu_generic"):
+            s["key_fields"]["latitude"]  = cl.get("latitude")
+            s["key_fields"]["longitude"] = cl.get("longitude")
+            s["key_fields"]["spud_date"] = cl.get("spud_date")
+            s["key_fields"]["td_ft"]     = cl.get("total_depth")
+            s["key_fields"]["county"]    = cl.get("county")
+            s["key_fields"]["state"]     = cl.get("state")
+            s["ppdm_hints"] = ["dbo.WELL"]
+        elif schema == "osdu_well_log" or schema == "jsonwlf":
+            s["key_fields"]["n_curves"]    = cl.get("n_curves", 0)
+            s["key_fields"]["curve_names"] = cl.get("curve_names", [])
+            s["ppdm_hints"] = ["dbo.WELL_LOG"]
+        elif schema == "osdu_marker_set":
+            s["key_fields"]["n_markers"]       = cl.get("n_markers", 0)
+            s["key_fields"]["formation_names"] = cl.get("formation_names", [])
+            s["key_fields"]["markers"]         = cl.get("markers", [])
+            s["ppdm_hints"] = ["dbo.WELL_FORMATION_TOP"]
+        elif schema == "osdu_pressure":
+            s["key_fields"]["pressures"]      = cl.get("pressures", {})
+            s["key_fields"]["n_flow_periods"] = cl.get("n_flow_periods", 0)
+            s["key_fields"]["permeability"]   = cl.get("permeability")
+            s["key_fields"]["fluid_type"]     = cl.get("fluid_type")
+            s["ppdm_hints"] = ["dbo.WELL_TEST"]
+        elif schema == "osdu_trajectory":
+            s["key_fields"]["survey_params"] = cl.get("survey_params", {})
+            s["key_fields"]["n_stations"]    = cl.get("n_stations", 0)
+            s["ppdm_hints"] = ["dbo.WELL_DIR_SURVEY", "dbo.WELL_DIR_SRVY_STATION"]
+        elif schema == "osdu_field":
+            s["key_fields"]["field_params"] = cl.get("field_params", {})
+            s["ppdm_hints"] = ["dbo.FIELD"]
+        elif schema == "osdu_reservoir":
+            s["key_fields"]["reservoir_params"] = cl.get("reservoir_params", {})
+            s["ppdm_hints"] = ["dbo.RESERVOIR"]
+        elif schema == "osdu_scal":
+            s["key_fields"]["scal_params"] = cl.get("scal_params", {})
+            s["ppdm_hints"] = ["dbo.WELL_CORE_ANALYSIS"]
+        elif schema == "osdu_document":
+            s["key_fields"]["doc_params"] = cl.get("doc_params", {})
+            s["ppdm_hints"] = ["dbo.WELL"]
+        elif schema == "osdu_horizon":
+            s["key_fields"]["horizon_params"] = cl.get("horizon_params", {})
+            s["ppdm_hints"] = ["dbo.SEIS_HORIZON"]
+        elif schema == "osdu_fault":
+            s["key_fields"]["fault_params"] = cl.get("fault_params", {})
+            s["ppdm_hints"] = ["dbo.SEIS_FAULT"]
+        elif schema == "osdu_completion":
+            cp = cl.get("completion_params", {})
+            s["key_fields"]["completion_params"] = cp
+            s["ppdm_hints"] = ["dbo.WELL_COMPLETION"]
+        elif schema == "osdu_core":
+            s["key_fields"]["n_plugs"]    = cl.get("n_plugs", 0)
+            s["key_fields"]["core_stats"] = cl.get("core_stats", {})
+            s["key_fields"]["plugs"]      = cl.get("plugs", [])
+            s["ppdm_hints"] = ["dbo.WELL_CORE"]
+        elif schema == "osdu_production":
+            s["key_fields"]["n_months"]            = cl.get("n_production_months", 0)
+            s["key_fields"]["production_summary"]  = cl.get("production_summary", {})
+            s["ppdm_hints"] = ["dbo.PDEN_WELL_PRODUCTION"]
+        elif schema == "osdu_seismic":
+            s["key_fields"]["survey_name"]  = cl.get("survey_name")
+            s["key_fields"]["seis_set_type"]= cl.get("seis_set_type")
+            s["key_fields"]["acq_params"]   = cl.get("acq_params", {})
+            s["ppdm_hints"] = ["dbo.SEIS_SET"]
+        else:
+            s["ppdm_hints"] = ["dbo.WELL"]
+
+        if cl.get("error"):
+            s["warnings"].append(f"Extraction note: {cl['error']}")
+
+    except Exception as e:
+        s["error"] = str(e)
+    return s
+
+
 # Main dispatcher
 # ══════════════════════════════════════════════════════════════════════════════
 def summarize(file_path: str) -> dict:
@@ -691,6 +1005,7 @@ def summarize(file_path: str) -> dict:
         ".las":    _summarize_las,
         ".dlis":   _summarize_dlis,
         ".dlf":    _summarize_dlis,
+        ".lis":    _summarize_lis,
         ".segy":   _summarize_segy,
         ".sgy":    _summarize_segy,
         ".seg":    _summarize_segy,
@@ -698,6 +1013,8 @@ def summarize(file_path: str) -> dict:
         ".shp":    _summarize_shp,
         ".geojson":_summarize_shp,
         ".gpkg":   _summarize_shp,
+        ".xml":    _summarize_witsml,
+        ".json":   _summarize_json_well_log,
         ".xlsx":   _summarize_excel,
         ".xls":    _summarize_excel,
         ".docx":   _summarize_docx,

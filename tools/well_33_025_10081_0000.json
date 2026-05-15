@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "33-025-10081-0000",
+    "FacilityName": "Prairie 29-111-H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "33-025-10081-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "330251008100",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Prairie 29-111-H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Marathon Oil",
+    "OperatorID": "osdu:master-data--Organisation:marathon-oil",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:ND",
+    "County": "Dunn",
+    "WellStatus": "Shut-in",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:SHUT_IN",
+    "SpudDate": "2022-11-20",
+    "DrillingCompletion": "2023-02-05",
+    "InitialCompletionDate": "2023-03-16",
+    "OriginalOperator": "Marathon Oil",
+    "Field": "Williston Basin",
+    "FormationAtTotalDepth": "Bakken",
+    "DrillersTotalDepth": 10625,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "N/2 SW/4",
+    "Section": 29,
+    "Township": 11,
+    "Range": 15,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 47.696245,
+          "Longitude": -103.863427
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -103.863427,
+                  47.696245,
+                  3307.3
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:33025100810000-WB01",
+        "WellboreName": "Prairie 29-111-H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 3307.3,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:ND",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "kind": "osdu:wks:master-data--Well:1.3.0",
+  "acl": {
+    "viewers": [
+      "data.default.viewers@opendes.contoso.com"
+    ],
+    "owners": [
+      "data.default.owners@opendes.contoso.com"
+    ]
+  },
+  "legal": {
+    "legaltags": [
+      "opendes-demo-legaltag"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "data": {
+    "FacilityID": "42-317-10028-0000",
+    "FacilityName": "Coterra 27-114H",
+    "FacilityNameAliases": [
+      {
+        "AliasName": "42-317-10028-0000",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API14"
+      },
+      {
+        "AliasName": "423171002800",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:API12"
+      },
+      {
+        "AliasName": "Coterra 27-114H",
+        "AliasNameTypeID": "osdu:reference-data--AliasNameType:CommonName"
+      }
+    ],
+    "OperatorName": "Coterra Energy",
+    "OperatorID": "osdu:master-data--Organisation:coterra-energy",
+    "CountryID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+    "StateProvinceID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+    "County": "Martin",
+    "WellStatus": "Shut-in",
+    "WellStatusTypeID": "osdu:reference-data--WellStatusType:SHUT_IN",
+    "SpudDate": "2018-02-24",
+    "DrillingCompletion": "2018-05-02",
+    "InitialCompletionDate": "2018-06-06",
+    "OriginalOperator": "Coterra Energy",
+    "Field": "Midland Basin",
+    "FormationAtTotalDepth": "Bone Spring",
+    "DrillersTotalDepth": 11881,
+    "DepthUnit": "ft",
+    "WaterDepth": 0.0,
+    "LegalDescription": "E/2 NW/4",
+    "Section": 27,
+    "Township": 11,
+    "Range": 10,
+    "SpatialLocation": {
+      "AsIngestedCoordinates": {
+        "CoordinateReferenceSystemID": "osdu:reference-data--CoordinateReferenceSystem:NAD83",
+        "FirstPoint": {
+          "Latitude": 31.799653,
+          "Longitude": -102.563886
+        },
+        "FeatureCollection": {
+          "type": "FeatureCollection",
+          "features": [
+            {
+              "type": "Feature",
+              "geometry": {
+                "type": "Point",
+                "coordinates": [
+                  -102.563886,
+                  31.799653,
+                  2850.2
+                ]
+              },
+              "properties": {}
+            }
+          ]
+        }
+      }
+    },
+    "WellBores": [
+      {
+        "WellboreID": "osdu:master-data--Wellbore:42317100280000-WB01",
+        "WellboreName": "Coterra 27-114H-WB01",
+        "VerticalMeasurement": {
+          "VerticalMeasurementID": "KB",
+          "VerticalMeasurement": 2850.2,
+          "VerticalMeasurementUnit": "ft"
+        }
+      }
+    ],
+    "GeoContexts": [
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:Country:US",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:Country"
+      },
+      {
+        "GeoPoliticalEntityID": "osdu:reference-data--GeopoliticalEntityType:StateProvince:TX",
+        "GeoTypeID": "osdu:reference-data--GeopoliticalEntityType:StateProvince"
+      }
+    ]
+  }
+}
