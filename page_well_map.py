@@ -1185,6 +1185,7 @@ def _add_well_grid(
     df: pd.DataFrame,
     step: float = 0.035,
     selected_set: set | None = None,
+    interactive: bool = True,
 ) -> int:
     """
     Renders the grid-density overview layer.
@@ -1284,15 +1285,30 @@ def _add_well_grid(
         # click's lat/lon from streamlit-folium's last_object_clicked and
         # uses floor-division by step to derive which cell was clicked.
         # The cell coordinates are implicit in the click coordinate.
-        folium.Rectangle(
+        # When `interactive` is False (Circle selection mode), the cell
+        # polygons are rendered inert — they still draw the heatmap fill
+        # but do NOT intercept pointer events. This lets a press-drag that
+        # starts on top of a cell pass straight through to Leaflet.draw so
+        # the circle gesture begins cleanly. In Cells mode they stay
+        # interactive so last_object_clicked fires for cell selection.
+        #
+        # NOTE: folium 0.20's Rectangle constructor silently DROPS an
+        # `interactive=` kwarg — it never reaches the serialized Leaflet
+        # options. The reliable path is to set it on `.options` after
+        # construction, which IS serialized into the rendered JS as
+        # "interactive": false. Verified against folium 0.20.0.
+        _rect = folium.Rectangle(
             bounds=bounds,
             color=border_color,
             weight=border_weight,
             fill=True,
             fill_color=color,
             fill_opacity=0.55,
-            tooltip=folium.Tooltip(tooltip_html, sticky=True),
-        ).add_to(grid_group)
+            tooltip=(folium.Tooltip(tooltip_html, sticky=True)
+                     if interactive else None),
+        )
+        _rect.options["interactive"] = interactive
+        _rect.add_to(grid_group)
 
     grid_group.add_to(m)
     return len(df)
@@ -1660,6 +1676,259 @@ def _add_gom_wells_markers(m, wells: list[dict]) -> int:
     return rendered
 
 
+# Trajectory simplification tuning. A GOM directional survey can carry
+# hundreds to >3,700 stations per wellbore. Feeding every raw station to
+# folium means streamlit-folium serializes tens of thousands of
+# coordinate pairs into the map JS and the browser parses + renders all
+# of them — that's the minute-plus stall on a 209-well draw, NOT the DB
+# query (single indexed query, see _qry_gom_trajectories).
+#
+# Real GOM survey data splits into two populations:
+#   - Vertical / near-vertical wells: thousands of stations occupying a
+#     map footprint of only a few metres. These genuinely have no shape
+#     to preserve at map zoom — collapsing them to ~2 points is correct.
+#   - Deviated wells: 2-3 km of lateral reach with real doglegs and build
+#     curves that the overlay exists to show.
+# A single fixed tolerance can't serve both — it either flattens the
+# deviated wells or fails to reduce the vertical ones. So tolerance is
+# ADAPTIVE: each wellbore is simplified relative to its own bounding-box
+# diagonal (a small %), with an absolute floor so a sub-metre vertical
+# well doesn't get a degenerate near-zero tolerance.
+#
+# Douglas-Peucker keeps the *shape* (kickoff, build, doglegs, lateral)
+# and drops redundant collinear vertices. _MAX_TRAJ_VERTICES is a hard
+# safety cap so a pathologically noisy survey still can't blow up one
+# polyline even if simplification can't reduce it enough.
+_TRAJ_SIMPLIFY_FRAC  = 0.002      # tolerance = 0.2% of wellbore diagonal
+_TRAJ_SIMPLIFY_FLOOR = 0.5        # absolute tolerance floor, in metres
+_MAX_TRAJ_VERTICES   = 250        # hard per-wellbore vertex cap
+_DEG_PER_M           = 1.0 / 111_320.0
+
+
+def _adaptive_tol(points: list) -> float:
+    """Per-wellbore Douglas-Peucker tolerance, in degrees.
+
+    Scales to the wellbore's own extent: tolerance is _TRAJ_SIMPLIFY_FRAC
+    of the lat/lon bounding-box diagonal, floored at _TRAJ_SIMPLIFY_FLOOR
+    metres. A vertical well (tiny diagonal) gets the floor and collapses
+    hard; a 2 km deviated well gets tens of metres and keeps its shape.
+    """
+    if len(points) < 3:
+        return _TRAJ_SIMPLIFY_FLOOR * _DEG_PER_M
+    lats = [p[0] for p in points]
+    lons = [p[1] for p in points]
+    diag_deg = math.hypot(max(lats) - min(lats), max(lons) - min(lons))
+    diag_m   = diag_deg / _DEG_PER_M
+    tol_m    = max(diag_m * _TRAJ_SIMPLIFY_FRAC, _TRAJ_SIMPLIFY_FLOOR)
+    return tol_m * _DEG_PER_M
+
+
+def _perp_dist(pt, line_start, line_end) -> float:
+    """Perpendicular distance from `pt` to the segment line_start→line_end.
+
+    All points are (lat, lon). Treated as planar — fine for the small
+    spans a single wellbore covers; the error from ignoring curvature is
+    far below the simplification tolerance.
+    """
+    (y0, x0), (y1, x1), (y2, x2) = pt, line_start, line_end
+    dy, dx = (y2 - y1), (x2 - x1)
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq == 0.0:
+        # Degenerate segment — start == end. Fall back to point distance.
+        return math.hypot(y0 - y1, x0 - x1)
+    # Cross-product magnitude / segment length = perpendicular distance.
+    return abs(dy * x0 - dx * y0 + x2 * y1 - y2 * x1) / math.sqrt(seg_len_sq)
+
+
+def _douglas_peucker(points: list, tol: float) -> list:
+    """Iterative Douglas-Peucker line simplification.
+
+    Returns a subset of `points` (always keeps the first and last) such
+    that no dropped point sat more than `tol` from the simplified line.
+    Iterative (explicit stack) rather than recursive so a long survey
+    can't hit Python's recursion limit.
+    """
+    n = len(points)
+    if n < 3:
+        return list(points)
+
+    keep = [False] * n
+    keep[0] = keep[n - 1] = True
+    stack = [(0, n - 1)]
+
+    while stack:
+        start, end = stack.pop()
+        if end <= start + 1:
+            continue
+        # Find the point farthest from the start→end chord.
+        max_d, max_i = -1.0, -1
+        a, b = points[start], points[end]
+        for i in range(start + 1, end):
+            d = _perp_dist(points[i], a, b)
+            if d > max_d:
+                max_d, max_i = d, i
+        if max_d > tol:
+            keep[max_i] = True
+            stack.append((start, max_i))
+            stack.append((max_i, end))
+
+    return [points[i] for i in range(n) if keep[i]]
+
+
+def _cap_vertices(points: list, cap: int) -> list:
+    """Hard safety cap — if a wellbore still has more than `cap` points
+    after Douglas-Peucker, evenly decimate down to `cap`. Always keeps
+    the first and last station so surface and bottom-hole stay anchored.
+    """
+    n = len(points)
+    if n <= cap:
+        return points
+    # Even stride sample, then force-include the last point.
+    step = n / float(cap)
+    idx = sorted(set(int(i * step) for i in range(cap)) | {n - 1})
+    return [points[i] for i in idx]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _qry_gom_trajectories(_engine, well_ids: tuple) -> dict:
+    """Survey-point trajectories for a set of GOM well_ids.
+
+    Returns {well_id: [(lat, lon), ...]} — one ordered coordinate list
+    per wellbore, stations ordered by measured depth. Each wellbore
+    (including each sidetrack, which has its own well_id) is its own
+    entry, so the renderer draws them as separate polylines.
+
+    Cached on the well_id tuple — re-drilling the same set is free.
+    Only points with both coordinates present are included; a survey
+    station with a null lat/lon is skipped rather than breaking the line.
+
+    Each wellbore's coordinate list is Douglas-Peucker simplified (and
+    hard-capped at _MAX_TRAJ_VERTICES) BEFORE it's returned, so both the
+    cache payload and the folium serialization stay small. A summary of
+    the reduction is printed so the effect is visible, not silent.
+    """
+    if not well_ids:
+        return {}
+    # Parameterize the IN-list. well_ids is a tuple of UUID strings.
+    _params = {f"w{i}": str(w) for i, w in enumerate(well_ids)}
+    _in = ", ".join(f":{k}" for k in _params)
+    sql = f"""
+        SELECT CONVERT(VARCHAR(36), well_id) AS well_id,
+               CAST(latitude  AS FLOAT) AS lat,
+               CAST(longitude AS FLOAT) AS lon
+        FROM dataview_gom.directional_survey_point
+        WHERE well_id IN ({_in})
+          AND latitude  IS NOT NULL
+          AND longitude IS NOT NULL
+        ORDER BY well_id, survey_point_md
+    """
+    out: dict = {}
+    try:
+        with _engine.connect().execution_options(timeout=30) as con:
+            for r in con.execute(text(sql), _params):
+                out.setdefault(r.well_id, []).append((r.lat, r.lon))
+    except Exception as exc:
+        st.warning(f"GOM trajectory query failed: {exc}")
+        return {}
+
+    # ── Simplify each wellbore before returning ──────────────────────
+    # Raw survey stations are mostly collinear; Douglas-Peucker keeps the
+    # shape and drops the redundancy. Tolerance is ADAPTIVE per wellbore
+    # (see _adaptive_tol) — a vertical well collapses hard, a deviated
+    # well keeps its curve. _cap_vertices is the hard backstop.
+    # Single-station wellbores (len < 2) are left alone — the renderer
+    # already skips anything under 2 points.
+    _raw_total = 0
+    _simp_total = 0
+    for _wid, _pts in out.items():
+        _raw_total += len(_pts)
+        if len(_pts) < 2:
+            _simp_total += len(_pts)
+            continue
+        _tol = _adaptive_tol(_pts)
+        _simplified = _douglas_peucker(_pts, _tol)
+        _simplified = _cap_vertices(_simplified, _MAX_TRAJ_VERTICES)
+        out[_wid] = _simplified
+        _simp_total += len(_simplified)
+
+    # Visible, not silent — so the reduction is verifiable at a glance.
+    if _raw_total:
+        _pct = 100.0 * (1.0 - _simp_total / _raw_total)
+        print(f"[GOM trajectories] {len(out):,} wellbores: "
+              f"{_raw_total:,} raw stations → {_simp_total:,} points "
+              f"({_pct:.1f}% reduction)")
+
+    return out
+
+
+def _add_gom_trajectories(m, wells: list[dict], engine) -> int:
+    """Draw wellbore trajectory polylines for drilled GOM wells.
+
+    Each wellbore is one polyline following its survey stations from
+    surface to bottom hole. Sidetracks have their own well_id and survey
+    rows, so they render as their own paths branching near the parent —
+    no special branch logic needed.
+
+    Path A design: only the currently-drilled wells get trajectories
+    drawn, so the well set is always bounded by the drill. No reliance
+    on a precomputed simplified-polyline table.
+
+    Args:
+        m:      folium.Map
+        wells:  the drilled GOM well dicts (viewport_gom_wells)
+        engine: SQLAlchemy engine
+
+    Returns:
+        number of trajectories drawn (for the status caption)
+    """
+    if not wells or engine is None:
+        return 0
+
+    # Collect well_ids from the drilled set. The dicts use "well_id"
+    # (circle/bbox query shape) — fall back to "uwi" just in case.
+    _wids = []
+    for w in wells:
+        _wid = str(w.get("well_id") or w.get("uwi") or "").strip()
+        if _wid:
+            _wids.append(_wid)
+    if not _wids:
+        return 0
+
+    traj = _qry_gom_trajectories(engine, tuple(sorted(set(_wids))))
+    if not traj:
+        return 0
+
+    fg = folium.FeatureGroup(
+        name=f"🌀 GOM Trajectories ({len(traj):,})",
+        show=True,
+    )
+    # well_id → well dict, for the polyline tooltip
+    _by_id = {str(w.get("well_id") or w.get("uwi") or "").strip(): w
+              for w in wells}
+
+    drawn = 0
+    for wid, coords in traj.items():
+        # A polyline needs at least two points. A single-station well
+        # (rare) has nothing to draw as a line.
+        if len(coords) < 2:
+            continue
+        _w = _by_id.get(wid, {})
+        _name = _w.get("well_name") or _w.get("api_well_number") or wid
+        _sfx  = _w.get("well_name_suffix") or ""
+        _label = f"{_name} {_sfx}".strip() if _sfx else _name
+        folium.PolyLine(
+            locations=coords,
+            color="#06b6d4",     # cyan — distinct from the amber-ring markers
+            weight=2,
+            opacity=0.85,
+            tooltip=f"{_label} — {len(coords):,} stations",
+        ).add_to(fg)
+        drawn += 1
+
+    fg.add_to(m)
+    return drawn
+
+
 
     if df.empty:
         return
@@ -1888,6 +2157,7 @@ def _add_gom_well_grid(
     df: pd.DataFrame,
     step: float = 0.36,
     selected_set: set | None = None,
+    interactive: bool = True,
 ) -> int:
     """
     Render the GOM wells density-grid overview layer.
@@ -1999,15 +2269,24 @@ def _add_gom_well_grid(
         # the entire map. Click coordinates come from last_object_clicked
         # at the run-level handler; cell identification is via floor-div
         # of click coords by step.
-        folium.Rectangle(
+        # See _add_well_grid: when `interactive` is False (Circle mode)
+        # the cell is inert so the circle-draw press isn't stolen by the
+        # polygon click. Tooltip is dropped too since an inert layer
+        # wouldn't surface it on hover anyway. As in _add_well_grid, the
+        # `interactive` flag must be set on .options after construction —
+        # folium 0.20's constructor kwarg for it is silently dropped.
+        _rect = folium.Rectangle(
             bounds=bounds,
             color=border_color,
             weight=border_weight,
             fill=True,
             fill_color=color,
             fill_opacity=0.6,
-            tooltip=folium.Tooltip(tooltip_html, sticky=True),
-        ).add_to(grid_group)
+            tooltip=(folium.Tooltip(tooltip_html, sticky=True)
+                     if interactive else None),
+        )
+        _rect.options["interactive"] = interactive
+        _rect.add_to(grid_group)
         cells_rendered += 1
 
     grid_group.add_to(m)
@@ -2489,6 +2768,48 @@ def _build_gom_scout_ticket_html(well_id, well_row, engine=None):
         except Exception:
             pass  # keep the cached well_row
 
+    # Directional survey — pull this well's stations from
+    # dataview_gom.directional_survey_point. A well can have hundreds or
+    # thousands of stations, so the ticket shows a summary line plus the
+    # first N stations rather than the whole trajectory. We query by
+    # well_id (resolved by the well_id-resolution pass); falls back to
+    # an empty result on any failure so the section just shows "none".
+    _SRVY_PREVIEW_N = 15
+    srvy_rows: list = []
+    srvy_summary: dict = {}
+    if engine is not None and well_id:
+        try:
+            with engine.connect().execution_options(timeout=10) as con:
+                # Summary first — count, max MD, max inclination — cheap
+                # aggregate over the indexed well_id.
+                _s = con.execute(text("""
+                    SELECT COUNT(*)            AS n_stations,
+                           MAX(survey_point_md)  AS max_md,
+                           MAX(survey_point_tvd) AS max_tvd,
+                           MAX(incl_ang)         AS max_incl
+                    FROM dataview_gom.directional_survey_point
+                    WHERE well_id = :wid
+                """), {"wid": str(well_id)}).fetchone()
+                if _s is not None:
+                    srvy_summary = dict(_s._mapping)
+                # Preview rows — first N stations by measured depth.
+                _sr = con.execute(text(f"""
+                    SELECT TOP ({_SRVY_PREVIEW_N})
+                           CAST(survey_point_md  AS FLOAT) AS md,
+                           CAST(incl_ang         AS FLOAT) AS incl,
+                           CAST(azimuth          AS FLOAT) AS azim,
+                           CAST(survey_point_tvd AS FLOAT) AS tvd,
+                           CAST(latitude         AS FLOAT) AS lat,
+                           CAST(longitude        AS FLOAT) AS lon
+                    FROM dataview_gom.directional_survey_point
+                    WHERE well_id = :wid
+                    ORDER BY survey_point_md
+                """), {"wid": str(well_id)}).fetchall()
+                srvy_rows = [dict(r._mapping) for r in _sr]
+        except Exception:
+            srvy_rows = []
+            srvy_summary = {}
+
     def _g(*keys):
         """First non-empty value across possible key names, else em-dash."""
         for k in keys:
@@ -2555,6 +2876,62 @@ def _build_gom_scout_ticket_html(well_id, well_row, engine=None):
            "border-top:none'>Not yet loaded for Gulf of America wells — "
            "this section will populate when the data is available.</div>")
 
+    # ── Directional Survey section ───────────────────────────────────────
+    # Real section now that dataview_gom.directional_survey_point is
+    # loaded. Shows a summary line (station count, max MD/TVD, max
+    # inclination) plus the first N stations. If the well has no survey
+    # rows, falls back to a "no survey data" note rather than the
+    # generic placeholder — the data path exists, this well just lacks it.
+    _n_srvy = srvy_summary.get("n_stations") or 0
+    if _n_srvy and srvy_rows:
+        _more = _n_srvy - len(srvy_rows)
+        _srvy_caption = (
+            f"Directional Survey — {_n_srvy:,} station"
+            f"{'s' if _n_srvy != 1 else ''}"
+            + (f", showing first {len(srvy_rows)}" if _more > 0 else "")
+        )
+        # Summary strip above the station table
+        _srvy_summary_html = (
+            "<div style='padding:7px 14px;font-size:12px;color:#475569;"
+            "background:#f1f5f9;border:1px solid #cbd5e1;border-top:none'>"
+            f"Max MD <b>{_fmt(srvy_summary.get('max_md'), suffix=' ft')}</b>"
+            f" &nbsp;·&nbsp; Max TVD "
+            f"<b>{_fmt(srvy_summary.get('max_tvd'), suffix=' ft')}</b>"
+            f" &nbsp;·&nbsp; Max Inclination "
+            f"<b>{_fmt(srvy_summary.get('max_incl'), fmt=',.1', suffix='°')}</b>"
+            "</div>"
+        )
+        # Station rows — MD / Inclination / Azimuth / TVD / Lat / Lon
+        _srvy_body = "".join(
+            _td([
+                _fmt(r.get("md"),   suffix=" ft"),
+                _fmt(r.get("incl"), fmt=",.2", suffix="°"),
+                _fmt(r.get("azim"), fmt=",.2", suffix="°"),
+                _fmt(r.get("tvd"),  suffix=" ft"),
+                (f"{r['lat']:.6f}" if r.get("lat") is not None else chr(8212)),
+                (f"{r['lon']:.6f}" if r.get("lon") is not None else chr(8212)),
+            ], alt=(i % 2 == 1))
+            for i, r in enumerate(srvy_rows)
+        )
+        _srvy_section = (
+            _section(_srvy_caption)
+            + _srvy_summary_html
+            + _tbl(
+                _th(["MD", "Inclination", "Azimuth", "TVD",
+                     "Latitude", "Longitude"])
+                + _srvy_body
+            )
+        )
+    else:
+        # Data path exists, this well just has no survey stations.
+        _srvy_section = (
+            _section("Directional Survey")
+            + "<div style='padding:10px 14px;color:#94a3b8;font-size:12px;"
+              "font-style:italic;background:#f8fafc;border:1px solid #e2e8f0;"
+              "border-top:none'>No directional survey stations found for "
+              "this well.</div>"
+        )
+
     html = f"""
     <div style='font-family:Arial,Helvetica,sans-serif;border:2px solid #334155;
                 border-radius:8px;overflow:hidden;margin-bottom:8px;
@@ -2608,8 +2985,7 @@ def _build_gom_scout_ticket_html(well_id, well_row, engine=None):
       {_section("Stratigraphy — Formation Tops")}
       {_ph}
 
-      {_section("Directional Survey")}
-      {_ph}
+      {_srvy_section}
 
       {_section("Completions & Stimulation")}
       {_ph}
@@ -3327,6 +3703,17 @@ def run(engine=None):
             # GOM wells are now driven by the top-bar Area selector — no
             # separate checkbox here. The Area dropdown is the single
             # source of truth for which region's wells render on the map.
+            #
+            # GOM trajectories — only meaningful when GOM is the active
+            # area, so the checkbox only shows then. Draws one polyline
+            # per drilled wellbore from dataview_gom.directional_survey_
+            # point; sidetracks render as their own paths.
+            if _area_is_gom:
+                if st.checkbox("🌀 GOM Trajectories", key="wm_db_gom_traj",
+                               help="Draw wellbore survey paths for the "
+                                    "currently-drilled GOM wells. Each "
+                                    "sidetrack shows as its own path."):
+                    active_db.add("db_gom_trajectories")
 
         # Registered layers
         active_shp = []
@@ -3555,6 +3942,36 @@ def run(engine=None):
                     st.session_state["grid_visible"] = _show_grid
                     st.rerun()
 
+                # Selection mode — Cells vs Circle. These two input modes
+                # both listen to map mouse events, and they conflict: a
+                # circle drill is a press-drag-release gesture, but if the
+                # press lands on a grid cell, the cell-click handler grabs
+                # it and the circle never starts. Making the modes mutually
+                # exclusive fixes that — in Circle mode the cell-click
+                # handler is skipped entirely (see the cell-click block),
+                # so the drag gesture is unambiguous. Default is Cells.
+                _sel_mode = st.radio(
+                    "Selection mode",
+                    options=["Cells", "Circle"],
+                    index=0 if st.session_state.get(
+                        "gom_sel_mode", "Cells") == "Cells" else 1,
+                    key="gom_sel_mode_radio",
+                    horizontal=True,
+                    help="Cells: click grid cells to multi-select. "
+                         "Circle: draw a radius circle on the map. "
+                         "Only one is active at a time so the click and "
+                         "drag gestures don't fight each other.",
+                )
+                if _sel_mode != st.session_state.get("gom_sel_mode", "Cells"):
+                    st.session_state["gom_sel_mode"] = _sel_mode
+                    # Switching modes clears any half-made cell selection —
+                    # it wouldn't make sense to carry pending cells into
+                    # Circle mode.
+                    if _sel_mode == "Circle":
+                        st.session_state["selected_cells"] = []
+                        st.session_state.pop("_last_grid_click", None)
+                    st.rerun()
+
             with c2:
                 if _sel_n == 0:
                     # No cells selected — but wells may be loaded from a
@@ -3700,14 +4117,16 @@ def run(engine=None):
                         ]
 
                         # Hide the grid — user wants to see the wells now.
-                        # MUST update BOTH the internal grid_visible flag
-                        # AND the widget's session_state key. Otherwise the
-                        # toggle UI shows ON while the render state says OFF,
-                        # and the next user toggle click does nothing because
-                        # the widget thinks it's already in the user's chosen
-                        # state.
+                        # Set the internal grid_visible flag, and POP the
+                        # widget's session_state key rather than assigning
+                        # it — Streamlit forbids writing a widget's key
+                        # after the widget has instantiated (the toggle
+                        # renders earlier in the script than this Commit
+                        # handler). Popping is allowed; on the next rerun
+                        # the toggle re-initializes from grid_visible via
+                        # its value= argument.
                         st.session_state["grid_visible"] = False
-                        st.session_state["grid_visible_toggle"] = False
+                        st.session_state.pop("grid_visible_toggle", None)
 
                         # Clear the selection buffer — drill done
                         st.session_state["selected_cells"] = []
@@ -3763,9 +4182,12 @@ def run(engine=None):
                     # the default/centroid view, not the last drilled area
                     st.session_state.pop("_drawn_bounds", None)
                     # Bring the grid back so the user can pick again.
-                    # Update BOTH keys (see Commit handler comment for why).
+                    # Set grid_visible, POP the widget key (assigning a
+                    # widget's key after it instantiated is forbidden —
+                    # see Commit handler comment). Toggle re-inits from
+                    # grid_visible on the next rerun.
                     st.session_state["grid_visible"] = True
-                    st.session_state["grid_visible_toggle"] = True
+                    st.session_state.pop("grid_visible_toggle", None)
                     # Signal the view-persist JS to wipe its sessionStorage
                     # entry on the next render. Otherwise Clear would land
                     # the map back on the last-viewed area, not the default.
@@ -3972,8 +4394,16 @@ def run(engine=None):
                     # multi-selected get the bold-blue-outline render.
                     _sel = st.session_state.get("selected_cells", [])
                     _sel_keys = {f"{c[0]:.4f}|{c[1]:.4f}" for c in _sel}
+                    # In Circle selection mode the grid cells must be inert
+                    # so a circle-draw press that lands on a cell isn't
+                    # consumed by the cell's click handler. Cells mode keeps
+                    # them interactive for click-to-select.
+                    _grid_interactive = (
+                        st.session_state.get("gom_sel_mode", "Cells") == "Cells"
+                    )
                     _cell_count = _add_well_grid(
                         m, _grid_df, step=0.035, selected_set=_sel_keys,
+                        interactive=_grid_interactive,
                     )
                     # NOTE: do NOT _phase(100) here — the bar persists
                     # through to the st_folium call below which is the
@@ -4091,10 +4521,16 @@ def run(engine=None):
                 _phase(50, f"🛢 Aggregating {int(_gom_grid_df['well_count'].sum()):,} GOM wells into grid cells…")
                 _sel_gom = st.session_state.get("selected_cells", [])
                 _sel_gom_keys = {f"{c[0]:.4f}|{c[1]:.4f}" for c in _sel_gom}
+                # Circle mode → inert cells so the draw gesture isn't stolen
+                # by a cell click. Cells mode → interactive for selection.
+                _gom_grid_interactive = (
+                    st.session_state.get("gom_sel_mode", "Cells") == "Cells"
+                )
                 _add_gom_well_grid(
                     m, _gom_grid_df,
                     step=0.36,
                     selected_set=_sel_gom_keys,
+                    interactive=_gom_grid_interactive,
                 )
                 # NOTE: do NOT _phase(100) here — bar persists to st_folium
             except Exception as _e:
@@ -4137,6 +4573,17 @@ def run(engine=None):
             _add_gom_wells_markers(m, _gom_drilled)
             # NOTE: do NOT _phase(100) here — bar persists to st_folium
 
+            # GOM trajectories — draw wellbore survey paths for the same
+            # drilled set when the overlay toggle is on. Uses the
+            # status-filtered _gom_drilled list, so trajectories follow
+            # the same status filter as the markers. Sidetracks have
+            # their own well_id and render as their own polylines.
+            if "db_gom_trajectories" in active_db:
+                _msg.info("🌀 Drawing GOM wellbore trajectories…")
+                _n_traj = _add_gom_trajectories(m, _gom_drilled, engine)
+                if _n_traj:
+                    _msg.info(f"🌀 Drew {_n_traj:,} GOM trajectories…")
+
         for lay in active_shp:
             _msg.info(f"🗂 Loading {lay.get('layer_name','layer')}…")
             _add_shapefile_layer(m, engine, lay)
@@ -4155,6 +4602,16 @@ def run(engine=None):
                     "shapeOptions": {"color": "#1d4ed8", "weight": 2},
                     "metric":       False,
                     "showRadius":   True,        # show radius while drawing
+                    # repeatMode left False: with it True, the Leaflet.Draw
+                    # event sequence (drawstart/drawstop) gets out of sync
+                    # with the drag guard's DV_DRAW_ACTIVE flag, and the
+                    # guard ends up eating the mouseup that finalizes the
+                    # circle. False keeps circle completion reliable —
+                    # click the toolbar icon once per circle. The mode
+                    # radio still handles the cell-click vs circle gesture
+                    # conflict, which was the part that actually mattered.
+                    # "Sticky circle" can revisit later as its own task,
+                    # with proper attention to the drag-guard interaction.
                     "repeatMode":   False,
                     # Lift Leaflet.Draw's hidden maxRadius cap. The default
                     # in some versions silently restricts circles to tens of
@@ -4775,7 +5232,13 @@ def run(engine=None):
         _click_popup = map_data.get("last_object_clicked_popup") if map_data else None
         _handled_as_cell = False
 
-        if (_coord_click and _cell_steps
+        # Selection mode gate: cell-click toggling only happens in "Cells"
+        # mode. In "Circle" mode the cell-click handler is skipped entirely
+        # so a press-drag-release that starts on a grid cell isn't stolen
+        # by the cell toggler — the circle gesture stays unambiguous.
+        _cells_mode = st.session_state.get("gom_sel_mode", "Cells") == "Cells"
+
+        if (_cells_mode and _coord_click and _cell_steps
                 and st.session_state.get("grid_visible", True)
                 and not _click_popup):
             try:
@@ -5044,10 +5507,12 @@ def run(engine=None):
                         st.session_state.pop("_last_grid_click", None)
                         st.session_state.pop("_drawn_bounds", None)
                         # Also clear the multi-cell selection buffer, and
-                        # bring the grid back so the user can pick again
+                        # bring the grid back so the user can pick again.
+                        # POP the widget key (assigning it after the widget
+                        # instantiated is forbidden — see Commit handler).
                         st.session_state["selected_cells"] = []
                         st.session_state["grid_visible"] = True
-                        st.session_state["grid_visible_toggle"] = True
+                        st.session_state.pop("grid_visible_toggle", None)
                         st.rerun()
 
 
