@@ -503,48 +503,89 @@ def render(engine=None):
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # ── Section 0: Bulk Region / Format Loaders ──────────────────────
-    # Purpose-built bulk loaders for source-shaped data that doesn't go
-    # through the generic column-mapping workflow below.
-    # Collapsed by default — the column-mapping workflow remains the
-    # primary path for ad-hoc CSV/Excel imports.
-    with st.expander("🌊 0 · Bulk Loaders — GOM", expanded=False):
-        try:
-            import page_import_gom
-            page_import_gom.render(engine)
-        except Exception as e:
-            st.error(f"GOM loader unavailable: {type(e).__name__}: {e}")
+    # ══════════════════════════════════════════════════════════════════
+    # Import mode selector
+    # ══════════════════════════════════════════════════════════════════
+    _mode = st.radio(
+        "Import mode",
+        ["⚡ Bulk Loaders", "🗂 Column Mapper"],
+        key="dvi_import_mode",
+        horizontal=True,
+        help="**Bulk Loaders** — purpose-built parsers for OSDU, WITSML, "
+             "RRC, GOM, and shapefiles. "
+             "**Column Mapper** — generic CSV/Excel importer with "
+             "column mapping and rules engine.",
+    )
+    st.divider()
+
+    if _mode == "⚡ Bulk Loaders":
+        loader_options = [
+            "— Select a loader —",
+            "🌊 GOM Wells (BOEM shapefile)",
+            "🌊 GOM Directional Surveys (BOEM Azimuth)",
+            "📐 WITSML (trajectory, log, mudLog, well)",
+            "🌐 OSDU JSON (16 schema kinds)",
+            "🤠 RRC Texas (MAF016 header file)",
+            "🗺️ Well Shapefile (any source)",
+        ]
+        loader_sel = st.selectbox(
+            "Data source",
+            loader_options,
+            key="dvi_loader_sel",
+        )
 
         st.divider()
 
-        # GOM directional survey loader — BOEM Azimuth fixed-width file.
-        try:
-            import page_import_gom_dir_srvy
-            page_import_gom_dir_srvy.render(engine)
-        except Exception as e:
-            st.error(
-                f"GOM directional survey loader unavailable: "
-                f"{type(e).__name__}: {e}"
-            )
+        if loader_sel == loader_options[1]:
+            try:
+                import page_import_gom
+                page_import_gom.render(engine)
+            except Exception as e:
+                st.error(f"GOM loader unavailable: {type(e).__name__}: {e}")
 
-    # WITSML and OSDU loaders each get their own top-level expander —
-    # Streamlit does not allow expanders nested inside other expanders,
-    # and these loaders use st.info / st.warning / st.caption internally.
-    with st.expander("📐 0b · WITSML Loader", expanded=False):
-        try:
-            import page_import_witsml
-            page_import_witsml.render(engine)
-        except Exception as e:
-            st.error(f"WITSML loader unavailable: {type(e).__name__}: {e}")
+        elif loader_sel == loader_options[2]:
+            try:
+                import page_import_gom_dir_srvy
+                page_import_gom_dir_srvy.render(engine)
+            except Exception as e:
+                st.error(f"GOM survey loader unavailable: {type(e).__name__}: {e}")
 
-    with st.expander("🌐 0c · OSDU JSON Loader", expanded=False):
-        try:
-            import page_import_osdu
-            page_import_osdu.render(engine)
-        except Exception as e:
-            st.error(f"OSDU loader unavailable: {type(e).__name__}: {e}")
+        elif loader_sel == loader_options[3]:
+            try:
+                import page_import_witsml
+                page_import_witsml.render(engine)
+            except Exception as e:
+                st.error(f"WITSML loader unavailable: {type(e).__name__}: {e}")
 
-    st.divider()
+        elif loader_sel == loader_options[4]:
+            try:
+                import page_import_osdu
+                page_import_osdu.render(engine)
+            except Exception as e:
+                st.error(f"OSDU loader unavailable: {type(e).__name__}: {e}")
+
+        elif loader_sel == loader_options[5]:
+            try:
+                import page_import_rrc
+                page_import_rrc.render(engine)
+            except Exception as e:
+                st.error(f"RRC loader unavailable: {type(e).__name__}: {e}")
+
+        elif loader_sel == loader_options[6]:
+            try:
+                import page_import_shapefile
+                page_import_shapefile.render(engine)
+            except Exception as e:
+                st.error(f"Shapefile loader unavailable: {type(e).__name__}: {e}")
+
+        else:
+            st.info("Select a data source above to begin loading.")
+
+        return  # Bulk loader mode — don't render column mapper below
+
+    # ══════════════════════════════════════════════════════════════════
+    # Column Mapper mode — generic CSV/Excel → DataView pipeline
+    # ══════════════════════════════════════════════════════════════════
 
     # ── Section 1: Upload & Detect ────────────────────────────────────
     with st.expander("📁 1 · Upload & Detect", expanded=True):

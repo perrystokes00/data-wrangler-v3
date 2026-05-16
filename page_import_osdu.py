@@ -146,13 +146,13 @@ def _load_well(engine, cl: dict, uwi: str, source: str) -> dict:
                 province_state,county,
                 surface_latitude,surface_longitude,
                 spud_date,completion_date,final_td,api_num,
-                active_ind,row_created_by,row_created_date,source
+                area,active_ind,row_created_by,row_created_date,source
             ) VALUES (
                 :uwi,:name,:oba,:fid,
                 :state,:county,
                 :lat,:lon,
                 :spud,:compl,:td,:api,
-                'Y','OSDU_LOADER',GETUTCDATE(),:src
+                :area,'Y','OSDU_LOADER',GETUTCDATE(),:src
             )
             WHEN MATCHED THEN UPDATE SET
                 well_name=COALESCE(tgt.well_name,:name),
@@ -165,6 +165,7 @@ def _load_well(engine, cl: dict, uwi: str, source: str) -> dict:
                 spud_date=COALESCE(tgt.spud_date,:spud),
                 completion_date=COALESCE(tgt.completion_date,:compl),
                 final_td=COALESCE(tgt.final_td,:td),
+                area=COALESCE(tgt.area,:area),
                 row_changed_by='OSDU_LOADER',row_changed_date=GETUTCDATE();
         """), {"uwi":_trunc(uwi,40),"name":_trunc(cl.get("well_name") or uwi,255),
                "oba":oba,"fid":fid,
@@ -176,6 +177,7 @@ def _load_well(engine, cl: dict, uwi: str, source: str) -> dict:
                "compl":_safe_date(cl.get("rig_release")),
                "td":_safe_float(cl.get("total_depth")),
                "api":_trunc(uwi,20),
+               "area":_trunc(area_label.strip() if 'area_label' in dir() else '',100),
                "src":_trunc(source,40)})
         stats["wells"] = 1
     return stats
@@ -1087,9 +1089,14 @@ def render(engine) -> None:
     if dir_path:
         st.session_state["osdu_loader_dir"] = dir_path
 
-    source_label = st.text_input(
+    _cs, _ca = st.columns(2)
+    source_label = _cs.text_input(
         "Source label", value="OSDU", key="osdu_source",
         help="Written to the source column on every inserted row.")
+    area_label = _ca.text_input(
+        "Area", value="", key="osdu_area",
+        placeholder="e.g. Permian Basin",
+        help="Optional area tag for well map filtering.")
 
     # ── Resolve source: uploaded file wins over directory path ────────────────
     if not uploaded and not dir_path.strip():
