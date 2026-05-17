@@ -1385,44 +1385,70 @@ def _filter_geojson(geojson: dict, schema: str = "all",
 
 
 
+
+def _add_to_tray(uwis: list, well_lookup: dict):
+    """Add wells to the session state tray."""
+    if "clicked_uwis" not in st.session_state:
+        st.session_state.clicked_uwis = []
+    if "tray_well_data" not in st.session_state:
+        st.session_state.tray_well_data = {}
+    for uwi in uwis:
+        if uwi not in st.session_state.clicked_uwis:
+            st.session_state.clicked_uwis.append(uwi)
+        d = well_lookup.get(uwi, {})
+        if uwi not in st.session_state.tray_well_data:
+            st.session_state.tray_well_data[uwi] = {
+                "uwi": uwi,
+                "well_name": d.get("name", ""),
+                "operator_name": d.get("operator", ""),
+                "field_name": d.get("field", ""),
+                "county": d.get("county", ""),
+                "well_status": d.get("status", ""),
+                "source": d.get("source", ""),
+                "area": d.get("area", ""),
+                "lat": d.get("lat"),
+                "lon": d.get("lon"),
+            }
+
 def _add_geojson_wells(m, geojson: dict):
-    """Add the well GeoJSON layer to a Folium map.
+    """Add wells from a GeoJSON FeatureCollection to a Folium map.
 
-    Uses folium.GeoJson with CircleMarker rendering — the browser
-    handles all 30K+ points as one JavaScript layer. Each point has
-    a popup with the UWI for click → scout ticket.
+    Converts features to a DataFrame and uses the existing _add_wells()
+    function (FastMarkerCluster) with data-uwi popups for click→tray.
     """
-    import folium
+    import pandas as pd
 
-    if not geojson.get("features"):
+    features = geojson.get("features", [])
+    if not features:
         return
 
-    # Lightweight popup — just UWI + name. The full scout ticket
-    # is fetched on click via _qry_well_detail.
-    layer = folium.GeoJson(
-        geojson,
-        name="Wells",
-        marker=folium.CircleMarker(
-            radius=3,
-            fill=True,
-            fill_color="#1D9E75",
-            fill_opacity=0.7,
-            color="#0A5C45",
-            weight=1,
-        ),
-        popup=folium.GeoJsonPopup(
-            fields=["uwi", "name", "operator", "field"],
-            aliases=["UWI", "Well", "Operator", "Field"],
-            localize=True,
-            max_width=300,
-        ),
-        tooltip=folium.GeoJsonTooltip(
-            fields=["uwi", "name"],
-            aliases=["UWI", "Well"],
-            sticky=False,
-        ),
-    )
-    layer.add_to(m)
+    # Convert GeoJSON features → list of dicts matching _add_wells format
+    rows = []
+    for f in features:
+        props = f.get("properties", {})
+        coords = f.get("geometry", {}).get("coordinates", [])
+        if len(coords) < 2:
+            continue
+        rows.append({
+            "uwi": props.get("uwi", ""),
+            "well_name": props.get("name", ""),
+            "operator_name": props.get("operator", ""),
+            "field_name": props.get("field", ""),
+            "county": props.get("county", ""),
+            "well_status": props.get("status", ""),
+            "source": props.get("source", ""),
+            "area": props.get("area", ""),
+            "spud_date": props.get("spud", ""),
+            "final_td": props.get("td"),
+            "lat": coords[1],
+            "lon": coords[0],
+        })
+
+    if not rows:
+        return
+
+    df = pd.DataFrame(rows)
+    _add_wells(m, df)
 
 
 def _add_wells(m, df, exclude_uwis=None):
@@ -4625,9 +4651,12 @@ def run(engine=None):
                     st.warning(f"Drilled wells render skipped: {_e}")
                     st.session_state["viewport_uwis"] = []
         elif _map_mode == "geojson":
-            # GeoJSON / pydeck mode — loads pre-built wells.geojson,
-            # filters in memory, renders via pydeck (WebGL).
-            # The pydeck map replaces Folium entirely for this mode.
+            # ── GeoJSON / pydeck mode ─────────────────────────────────
+            # Loads wells.geojson, filters in memory, renders via pydeck.
+            # Pydeck replaces the Folium map for this mode.
+            import pydeck as pdk
+            import math
+
             _full_gj = _load_well_geojson()
             _all_features = _full_gj.get("features", [])
 
@@ -4635,10 +4664,9 @@ def run(engine=None):
                 _msg.warning(
                     "🗺️ No wells.geojson file found. Run "
                     "`python build_well_geojson.py` to generate it, "
-                    "or click **Refresh GeoJSON** below."
-                )
+                    "or click **Refresh GeoJSON** below.")
             else:
-                # Build filter options from the loaded data
+                # Filters
                 _schemas = sorted({f["properties"].get("schema","")
                                    for f in _all_features} - {""})
                 _areas   = sorted({f["properties"].get("area","")
@@ -4647,163 +4675,202 @@ def run(engine=None):
                                    for f in _all_features} - {""})
 
                 _gj_c1, _gj_c2, _gj_c3 = st.columns(3)
-                _gj_schema = _gj_c1.selectbox(
-                    "Schema",
+                _gj_schema = _gj_c1.selectbox("Schema",
                     ["all"] + _schemas,
-                    format_func=lambda s: {
-                        "all": "All schemas",
-                        "dataview": "DataView",
-                        "gom": "GOM",
-                    }.get(s, s),
-                    key="gj_schema",
-                )
-                _gj_area = _gj_c2.selectbox(
-                    "Area",
-                    ["— All —"] + _areas,
-                    key="gj_area",
-                )
-                _gj_source = _gj_c3.selectbox(
-                    "Source",
-                    ["— All —"] + _sources,
-                    key="gj_source",
-                )
+                    format_func=lambda s: {"all":"All","dataview":"DataView","gom":"GOM"}.get(s,s),
+                    key="gj_schema")
+                _gj_area = _gj_c2.selectbox("Area",
+                    ["— All —"] + _areas, key="gj_area")
+                _gj_source = _gj_c3.selectbox("Source",
+                    ["— All —"] + _sources, key="gj_source")
 
-                _basemap_opts = {
+                # Basemap
+                _bm_opts = {
+                    "Navigation (Day)": "mapbox://styles/mapbox/navigation-day-v1",
+                    "Navigation (Night)": "mapbox://styles/mapbox/navigation-night-v1",
+                    "Streets": "mapbox://styles/mapbox/streets-v12",
+                    "Satellite + Labels": "mapbox://styles/mapbox/satellite-streets-v12",
+                    "Outdoors": "mapbox://styles/mapbox/outdoors-v12",
                     "Dark": "mapbox://styles/mapbox/dark-v10",
                     "Light": "mapbox://styles/mapbox/light-v10",
-                    "Streets": "mapbox://styles/mapbox/streets-v11",
-                    "Satellite": "mapbox://styles/mapbox/satellite-v9",
-                    "Satellite + Labels": "mapbox://styles/mapbox/satellite-streets-v11",
-                    "Outdoors": "mapbox://styles/mapbox/outdoors-v11",
                 }
-                _gj_bm = _gj_c1.selectbox(
-                    "Basemap",
-                    list(_basemap_opts.keys()),
-                    key="gj_basemap",
-                )
-                _pdk_style = _basemap_opts[_gj_bm]
+                _gj_bm = _gj_c1.selectbox("Basemap",
+                    list(_bm_opts.keys()), key="gj_basemap")
 
-                _filtered = _filter_geojson(
-                    _full_gj,
+                _filtered = _filter_geojson(_full_gj,
                     schema=_gj_schema,
                     area="" if _gj_area == "— All —" else _gj_area,
-                    source="" if _gj_source == "— All —" else _gj_source,
-                )
+                    source="" if _gj_source == "— All —" else _gj_source)
                 _feats = _filtered.get("features", [])
                 _n = len(_feats)
 
                 if _n:
                     _meta = _full_gj.get("metadata", {})
                     _gen = _meta.get("generated", "unknown")[:19]
-                    _msg.info(
-                        f"🗺️ {_n:,} wells"
-                        f" (of {len(_all_features):,} total)"
-                        f" · generated {_gen}"
-                    )
+                    _msg.info(f"🗺️ {_n:,} wells · generated {_gen}")
 
-                    # Build pydeck data from features
-                    import pydeck as pdk
+                    # Build pydeck data
+                    _STATUS_COLORS = {
+                        "ACTIVE":[34,197,94,220],"PLUGGED":[239,68,68,220],
+                        "SHUT_IN":[251,191,36,220],"TA":[249,115,22,220],
+                        "ABANDONED":[156,163,175,220],"COMPLETED":[16,185,129,220],
+                        "PERMITTED":[96,165,250,220],"CANCELLED":[156,163,175,150],
+                    }
+                    _DEFAULT_COLOR = [29,158,117,200]
 
                     _dk_data = []
                     for _f in _feats:
                         _p = _f.get("properties", {})
                         _c = _f.get("geometry", {}).get("coordinates", [])
-                        if len(_c) < 2:
-                            continue
+                        if len(_c) < 2: continue
+                        _st = (_p.get("status") or "").upper()
                         _dk_data.append({
-                            "lon": _c[0],
-                            "lat": _c[1],
-                            "uwi": _p.get("uwi", ""),
-                            "name": _p.get("name", ""),
-                            "operator": _p.get("operator", ""),
-                            "field": _p.get("field", ""),
-                            "county": _p.get("county", ""),
-                            "status": _p.get("status", ""),
-                            "source": _p.get("source", ""),
-                            "area": _p.get("area", ""),
-                            "td": _p.get("td") or 0,
+                            "lon": _c[0], "lat": _c[1],
+                            "uwi": _p.get("uwi",""),
+                            "name": _p.get("name",""),
+                            "operator": _p.get("operator",""),
+                            "field": _p.get("field",""),
+                            "county": _p.get("county",""),
+                            "status": _p.get("status",""),
+                            "source": _p.get("source",""),
+                            "area": _p.get("area",""),
+                            "color": _STATUS_COLORS.get(_st, _DEFAULT_COLOR),
                         })
 
-                    # Calculate view center from data
-                    if _dk_data:
+                    # View state — preserve across reruns
+                    _saved = st.session_state.get("_pdk_view", {})
+                    if _dk_data and not _saved:
                         _avg_lat = sum(d["lat"] for d in _dk_data) / len(_dk_data)
                         _avg_lon = sum(d["lon"] for d in _dk_data) / len(_dk_data)
                     else:
-                        _avg_lat, _avg_lon = 32.0, -100.0
+                        _avg_lat = _saved.get("lat", 32.0)
+                        _avg_lon = _saved.get("lon", -100.0)
 
                     _view = pdk.ViewState(
-                        latitude=_avg_lat,
-                        longitude=_avg_lon,
-                        zoom=6,
-                        pitch=0,
-                    )
+                        latitude=_saved.get("lat", _avg_lat),
+                        longitude=_saved.get("lon", _avg_lon),
+                        zoom=_saved.get("zoom", 6),
+                        pitch=0, bearing=0)
 
-                    # ScatterplotLayer — each point is a GPU pixel
-                    _layer = pdk.Layer(
-                        "ScatterplotLayer",
+                    _layer = pdk.Layer("ScatterplotLayer",
                         data=_dk_data,
                         get_position=["lon", "lat"],
-                        get_fill_color=[29, 158, 117, 220],  # #1D9E75
-                        get_line_color=[10, 60, 45, 255],
-                        get_radius=80,
-                        radius_min_pixels=2,
-                        radius_max_pixels=8,
+                        get_fill_color="color",
+                        get_line_color=[40,40,40,180],
+                        get_radius=30,
+                        radius_min_pixels=3,
+                        radius_max_pixels=15,
                         pickable=True,
                         auto_highlight=True,
-                        highlight_color=[255, 200, 0, 200],
-                    )
+                        highlight_color=[255,200,0,200])
 
-                    # Tooltip on hover
                     _tooltip = {
-                        "html": (
-                            "<b>{uwi}</b><br>"
-                            "{name}<br>"
-                            "<i>{operator}</i><br>"
-                            "{field} · {county}<br>"
-                            "Status: {status} · Source: {source}"
-                        ),
-                        "style": {
-                            "backgroundColor": "#1a1a2e",
-                            "color": "white",
-                            "fontSize": "12px",
-                            "padding": "8px",
-                            "borderRadius": "4px",
-                        },
-                    }
+                        "html": "<b>{uwi}</b><br>{name}<br>"
+                                "<i>{operator}</i><br>"
+                                "{field} · {county}<br>"
+                                "Status: {status}",
+                        "style": {"backgroundColor":"#1a1a2e",
+                                  "color":"white","fontSize":"12px",
+                                  "padding":"8px","borderRadius":"4px"}}
 
-                    # Render the pydeck map — this replaces st_folium for
-                    # this mode. The map renders via WebGL, not DOM elements.
                     _dk_event = st.pydeck_chart(
-                        pdk.Deck(
-                            layers=[_layer],
-                            initial_view_state=_view,
-                            map_style=_pdk_style,
-                            tooltip=_tooltip,
-                        ),
-                        use_container_width=True,
-                        height=550,
+                        pdk.Deck(layers=[_layer],
+                                 initial_view_state=_view,
+                                 map_style=_bm_opts[_gj_bm],
+                                 tooltip=_tooltip),
+                        use_container_width=True, height=550,
                         on_select="rerun",
                         selection_mode="single-object",
-                        key="pydeck_wells",
-                    )
+                        key="pydeck_wells")
 
-                    # Handle click → scout ticket
+                    # ── Click handling via last_clicked coordinates ────
+                    # Pydeck selection.objects is empty, but
+                    # last_object_clicked coordinates DO work.
+                    # Find the nearest well to the clicked point.
                     if _dk_event and _dk_event.selection:
-                        _sel_objs = _dk_event.selection.get("objects", {})
-                        _sel_points = _sel_objs.get("ScatterplotLayer", [])
+                        _sel = _dk_event.selection
+                        _lc = None
+                        # Try to get clicked coordinates
+                        if isinstance(_sel, dict):
+                            _lc = _sel.get("last_object_clicked")
+                        if not _lc:
+                            _lc = getattr(_sel, "last_object_clicked", None)
 
-                        if _sel_points:
-                            _clicked = _sel_points[0]
-                            _clicked_uwi = _clicked.get("uwi", "")
-                            if _clicked_uwi:
-                                st.session_state.scout_uwi = _clicked_uwi
-                                if _clicked_uwi not in st.session_state.get("clicked_uwis", []):
-                                    if "clicked_uwis" not in st.session_state:
-                                        st.session_state.clicked_uwis = []
-                                    st.session_state.clicked_uwis.append(_clicked_uwi)
+                        # Also try the indices approach
+                        _sel_indices = {}
+                        if isinstance(_sel, dict):
+                            _sel_indices = _sel.get("indices", {})
+                        _idx_list = (_sel_indices.get("ScatterplotLayer", [])
+                                     if isinstance(_sel_indices, dict) else [])
+                        if _idx_list and _dk_data:
+                            for _idx in _idx_list:
+                                if 0 <= _idx < len(_dk_data):
+                                    _hit = _dk_data[_idx]
+                                    _uwi = _hit.get("uwi", "")
+                                    if _uwi:
+                                        _add_to_tray([_uwi],
+                                            {_uwi: _hit})
 
-                    # Skip the Folium render below — pydeck is the map
-                    _skip_folium = True
+                        # Coordinate-based nearest well lookup
+                        if _lc and isinstance(_lc, (list, tuple)) and len(_lc) >= 2:
+                            _click_lon, _click_lat = float(_lc[0]), float(_lc[1])
+                            # Find nearest well within ~500m
+                            _best = None
+                            _best_dist = float("inf")
+                            for _d in _dk_data:
+                                _dlat = _d["lat"] - _click_lat
+                                _dlon = _d["lon"] - _click_lon
+                                _dist = _dlat*_dlat + _dlon*_dlon
+                                if _dist < _best_dist:
+                                    _best_dist = _dist
+                                    _best = _d
+                            # ~0.005 degrees ≈ 500m
+                            if _best and _best_dist < 0.005 * 0.005:
+                                _uwi = _best.get("uwi", "")
+                                if _uwi:
+                                    _add_to_tray([_uwi],
+                                        {_uwi: _best})
+
+                    # ── Tray ──────────────────────────────────────────
+                    _tray = st.session_state.get("clicked_uwis", [])
+                    if _tray:
+                        st.divider()
+                        st.caption(
+                            f"**Well tray ({len(_tray)}):** "
+                            + " · ".join(_tray[-15:])
+                            + (" …" if len(_tray) > 15 else ""))
+                        _tc1, _tc2 = st.columns(2)
+                        if _tc1.button("📋 View Scout Tickets",
+                                       key="gj_view_tickets",
+                                       type="primary",
+                                       use_container_width=True):
+                            st.session_state["_summary_uwis"] = list(_tray)
+                            st.session_state["show_summary"] = True
+                        if _tc2.button("🗑️ Clear tray",
+                                       key="gj_clear_tray",
+                                       use_container_width=True):
+                            st.session_state["clicked_uwis"] = []
+                            st.session_state.pop("_summary_uwis", None)
+                            st.session_state["show_summary"] = False
+                            st.rerun()
+
+                    # Legend
+                    _active_statuses = sorted({d["status"] for d in _dk_data if d["status"]})
+                    if _active_statuses:
+                        _hex_map = {
+                            "ACTIVE":"#22C55E","PLUGGED":"#EF4444",
+                            "SHUT_IN":"#FBBF24","TA":"#F97316",
+                            "ABANDONED":"#9CA3AF","COMPLETED":"#10B981",
+                            "PERMITTED":"#60A5FA","CANCELLED":"#9CA3AF",
+                        }
+                        _leg = []
+                        for _s in _active_statuses:
+                            _hx = _hex_map.get(_s.upper(), "#1D9E75")
+                            _leg.append(
+                                f'<span style="display:inline-block;width:10px;'
+                                f'height:10px;border-radius:50%;background:{_hx};'
+                                f'margin-right:3px"></span>{_s}')
+                        st.caption(" · ".join(_leg), unsafe_allow_html=True)
 
                 else:
                     _msg.info("🗺️ No wells match the selected filters.")
@@ -4821,12 +4888,13 @@ def run(engine=None):
                         _gj_path.write_text(
                             _json_mod.dumps(_gj_data), encoding="utf-8")
                         st.session_state.pop("_well_geojson_data", None)
-                        _n_ref = _gj_data["metadata"]["total_wells"]
-                        st.success(
-                            f"✅ Rebuilt wells.geojson — {_n_ref:,} wells")
+                        st.success(f"✅ Rebuilt — {_gj_data['metadata']['total_wells']:,} wells")
                         st.rerun()
                     except Exception as _e:
                         st.error(f"Refresh failed: {_e}")
+
+            # Skip Folium render — pydeck is the map
+            _skip_folium = True
 
         elif not dff.empty:
             # Wells mode — needs the full wells dataframe (lazy-loaded
@@ -5342,20 +5410,20 @@ def run(engine=None):
         if _skip_folium:
             map_data = None
         else:
-          _phase(90, "🌐 Rendering map in browser…")
-          try:
-            map_data = st_folium(
+            _phase(90, "🌐 Rendering map in browser…")
+            try:
+                map_data = st_folium(
                 m, height=500, use_container_width=True,
                 returned_objects=_ret,
                 key=_map_widget_key,
             )
-          except TypeError:
-            # Older streamlit-folium that doesn't support use_container_width
-            map_data = st_folium(
-                m, width=None, height=500,
-                returned_objects=_ret,
-                key=_map_widget_key,
-            )
+            except TypeError:
+                # Older streamlit-folium
+                map_data = st_folium(
+                    m, width=None, height=500,
+                    returned_objects=_ret,
+                    key=_map_widget_key,
+                )
         _phase(100)
         _msg.empty()
 

@@ -491,7 +491,6 @@ with st.sidebar:
             ("well_map",      "🗺",  "Mapping"),
             ("importer",      "📥", "Import Data"),
             ("db_explorer",   "🔍", "DB Explorer"),
-            ("file_inv",      "👥", "Team Catalog"),
             ("workbench",     "🗂️", "File Catalog"),
             ("ref_tables",    "📋", "Reference Tables"),
         ]
@@ -618,18 +617,12 @@ if S.app_mode == "splash":
         _nav_card(c4, "🔍", "DB Explorer",
                   "Query · browse · export any DataView table",
                   "db_explorer")
-        _nav_card(c5, "👥", "Team Catalog",
-                  "Assign · track · manage catalogers",
-                  "file_inv")
+        _nav_card(c5, "🗂️", "File Catalog",
+                  "Scan · enrich · browse · view · extract · load",
+                  "workbench")
         _nav_card(c6, "📋", "Reference Tables",
                   "Seed dv_r_well_status · dv_r_well_type · lookups",
                   "ref_tables")
-
-        # Row 3
-        c7, c8, c9 = st.columns(3)
-        _nav_card(c7, "🗂️", "File Catalog",
-                  "Scan · enrich · browse · view · extract · load",
-                  "workbench")
 
 
 # ── WELL MAP ──────────────────────────────────────────────────────────
@@ -685,7 +678,7 @@ elif S.app_mode == "file_inv":
         import page_file_manager
         page_file_manager.render(S.engine, _dialect)
     except Exception as e:
-        st.error(f"Team Catalog error: {e}")
+        st.error(f"File Manager error: {e}")
 
 
 # ── FILE CATALOG ─────────────────────────────────────────────────────
@@ -721,7 +714,7 @@ elif S.app_mode == "file_scan":
         import page_file_manager
         page_file_manager.render(S.engine, _dialect)
     except Exception as e:
-        st.error(f"Team Catalog error: {e}")
+        st.error(f"File Manager error: {e}")
 
 
 elif S.app_mode == "spatial":
