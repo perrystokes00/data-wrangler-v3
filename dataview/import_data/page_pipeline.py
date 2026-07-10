@@ -6,12 +6,12 @@ import pandas as pd
 from dataview.core.ui_helpers import shdr, pill, mrow
 
 # ── Pipeline modules ─────────────────────────────────────────────────
-from modules.db        import DBConfig, connect, connect_demo
-from modules.schema    import load_schema_from_dict, load_schema_from_string
-from modules.staging   import ingest_file, load_to_staging, load_to_staging_demo, preview_csv, preview_staging_table
+from dataview.core.db        import DBConfig, connect, connect_demo
+from dataview.core.schema    import load_schema_from_dict, load_schema_from_string
+from dataview.import_data.staging   import ingest_file, load_to_staging, load_to_staging_demo, preview_csv, preview_staging_table
 from dataview.import_data.normalize import normalize_server, normalize_demo
-from modules.mapping   import build_mapping, TRANSFORM_OPTIONS, build_transform_sql, mapping_fingerprint, serialise_mapping, restore_mapping, save_mapping_to_disk, restore_mapping_from_disk, save_entity_mapping, restore_entity_mapping
-from modules.fk        import (
+from dataview.import_data.mapping   import build_mapping, TRANSFORM_OPTIONS, build_transform_sql, mapping_fingerprint, serialise_mapping, restore_mapping, save_mapping_to_disk, restore_mapping_from_disk, save_entity_mapping, restore_entity_mapping
+from dataview.core.fk        import (
     introspect_fk_constraints, introspect_fk_demo,
     check_fk_violations, apply_resolutions as apply_fk_resolutions,
     FKViolation, FKNode,
@@ -24,10 +24,10 @@ from dataview.core.fk_entity import (
     insert_entity_rows, topological_sort, KNOWN_ENTITY_TABLES,
     EntityMapping, build_fk_graph,
 )
-from modules.validate     import validate
-from modules.promote      import promote_server, promote_demo, promote_merge, compute_data_hash, _write_file_record
+from dataview.core.validate     import validate
+from dataview.import_data.promote      import promote_server, promote_demo, promote_merge, compute_data_hash, _write_file_record
 try:
-    from modules.ppdm_agent   import PPDMAgent, build_pipeline_context
+    from dataview.core.ppdm_agent   import PPDMAgent, build_pipeline_context
 except ImportError:
     PPDMAgent = None
     build_pipeline_context = None
@@ -2395,3 +2395,4 @@ def render(S):
     except Exception:
         pass
     _render_timing_sidebar()
+

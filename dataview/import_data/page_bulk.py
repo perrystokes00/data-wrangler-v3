@@ -348,14 +348,14 @@ def run_job(job: dict, engine, ppdm_schema, progress_cb=None, cancel_flag=None) 
     Returns result dict with: ok, rows_inserted, rows_skipped,
                                rows_error, message, duration_s
     """
-    from modules.staging   import ingest_file, load_to_staging
-    from modules.mapping   import (build_mapping, mapping_fingerprint,
+    from dataview.import_data.staging   import ingest_file, load_to_staging
+    from dataview.import_data.mapping   import (build_mapping, mapping_fingerprint,
                                    restore_mapping_from_disk)
     from dataview.import_data.normalize import normalize_server
-    from modules.fk        import introspect_fk_constraints, check_fk_violations
+    from dataview.core.fk        import introspect_fk_constraints, check_fk_violations
     from dataview.core.fk_entity import is_reference_table, build_fk_graph
-    from modules.validate  import validate
-    from modules.promote   import promote_server, promote_merge
+    from dataview.core.validate  import validate
+    from dataview.import_data.promote   import promote_server, promote_merge
 
     # ── Seed mode: direct CSV → table insert, no pipeline ──────────────
     if job.get("seed_mode"):
@@ -3176,3 +3176,4 @@ def render(S):
                 })
             _HISTORY_FILE.write_text(json.dumps(_hist[:200], indent=2), encoding="utf-8")
             st.rerun()
+
