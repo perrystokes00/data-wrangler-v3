@@ -1,0 +1,24 @@
+=== pdf_survey_catalog.py — is the 'API Number:' regex fix in each copy? ===
+  root  copy:
+     has broadened UWI regex ('NUM(?:BER)?'): True
+     has old narrow regex ('API.?NUM|API.?NO'): False
+     size: 66880 chars
+  modules copy:
+     has broadened UWI regex ('NUM(?:BER)?'): False
+     has old narrow regex ('API.?NUM|API.?NO'): True
+     size: 66848 chars
+
+=== survey_loader.py — is the column-key fix (md/incl/azim) in each copy? ===
+  root: not present
+  modules: fixed(md/incl/azim)=True  old(station_md/inclination)=False
+
+=== page_workbench.py — is the scorecard patch in each copy? ===
+  root: has 'Stage scorecard'=True  size=251601
+
+=== VERDICT ===
+  For each file, the copy your app IMPORTS MOST (from module_dupes.txt) must show the
+  fix. If the live copy lacks it, re-apply the patch to THAT copy (or better: delete
+  the dead copy and keep one).
+  pdf_survey_catalog: app prefers modules\ (15 vs 7) -> modules copy needs the regex fix
+  page_workbench:     app uses root (7 vs 0)          -> root copy needs the scorecard (it does)
+  survey_loader:      single file (no dupe)           -> just deploy the col fix once

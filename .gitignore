@@ -1,0 +1,152 @@
+# ============================================================================
+# Python
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pkl
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+geojson/*.geojson
+
+# ============================================================================
+# Virtual environments
+# ============================================================================
+venv/
+.venv/
+env/
+ENV/
+
+# ============================================================================
+# IDE / Editor
+# ============================================================================
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================================================
+# Streamlit
+# ============================================================================
+.streamlit/secrets.toml
+
+# ============================================================================
+# Data Wrangler v3 — runtime caches and state files
+# ============================================================================
+mapping_cache.json
+modules/mapping_cache.json
+bulk_queue.json
+bulk_history.json
+bulk_watcher.json
+bulk_runner.log
+schema_registry/
+schema_registry/ppdm_39_schema_domain.json
+schema_registry/ppdm_39_schema_domain.pkl
+
+# ============================================================================
+# Data Wrangler v3 — distributions, installers, backups
+# ============================================================================
+data_wrangler_dist/
+data_wrangler_installer/
+dw_compiled/
+*.zip
+*_backup.py
+*_save.py
+*_old.py
+*.bak
+*.bak2
+backup/
+
+# ============================================================================
+# Sensitive files (credentials, licences, secrets)
+# ============================================================================
+licence.json
+license.json
+*.licence
+.env
+oracle_config.json
+snowflake_config.json
+
+# ============================================================================
+# Logs and runtime output
+# ============================================================================
+*.log
+sf_connect_debug.log
+bulk_fk_seed.log
+output/
+download/
+
+# ============================================================================
+# Data files — too large for git, not source
+# ============================================================================
+*.csv
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.db
+db_schema_snapshot.json
+training/
+reference_files/
+seed_catalog/
+spatial/
+
+# Shapefile components (always travel together — exclude all)
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+
+# Test/scratch data
+test.csv
+test.xlsx
+*_export.csv
+kgs_wells_*.csv
+*_summary.csv
+LAS_*.xlsx
+LAS_*.csv
+
+# ============================================================================
+# Media — large, not source
+# ============================================================================
+*.pdf
+*.PDF
+*.mp3
+*.mp4
+*.mov
+videos/
+core_photos/
+assets/cowboy.png
+
+# ============================================================================
+# OS / misc
+# ============================================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.temp
+
+PPDM_Studio_5/
+
+PPDM_Studio_5_PARKED/
+
+geojson/
+
+_scratch/

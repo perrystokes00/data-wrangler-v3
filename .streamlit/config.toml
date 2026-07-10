@@ -1,0 +1,19 @@
+# .streamlit/config.toml
+# Themes the canvas-rendered grids (st.dataframe / st.data_editor) — the Match
+# & Map editor and the FK resolution grids — which your injected CSS can't reach.
+# These four colors are read directly by glide-data-grid, so every table picks
+# up Midnight Gold automatically: slate cells, white text, gold selection.
+#
+# Values mirror the "Midnight Gold" entry in app_v3.py THEMES.
+# Note: this is applied at launch, so it sets the grid look to Midnight Gold
+# regardless of the runtime theme dropdown (the grids can't switch live the way
+# the CSS-themed chrome does). Since Midnight Gold is the default, that's the
+# intended look.
+
+[theme]
+base                     = "dark"
+backgroundColor          = "#0e0e10"   # cell background  (bg)
+secondaryBackgroundColor = "#17171a"   # header / alt rows (bg_mid)
+textColor                = "#ffffff"   # cell text        (text)
+primaryColor             = "#ffd400"   # selection / accent (primary/gold)
+font                     = "monospace"

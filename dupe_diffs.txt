@@ -1,0 +1,55 @@
+
+### bcp_capture.py  (similarity 94.0%)
+    root:    481 lines   modules: 466 lines
+    lines only in root: 20   only in modules: 16   changed: 16
+    ROOT   :     # nested-pool safe: if we're already inside a spawned child proces
+    MODULES:     with ProcessPoolExecutor(max_workers=workers) as ex:
+    ROOT   :             _d += 1
+    MODULES:             _done += 1
+    only in ROOT   : 
+    only in MODULES:     # Survey outline: convex hull of the sampled CDP points (same as the pool
+    -> meaningfully diverged; review the diff before deleting either.
+
+### catalog_capture.py  (similarity 0.0%)
+    root:    5 lines   modules: 266 lines
+    lines only in root: 0   only in modules: 0   changed: 266
+    ROOT   : # catalog_capture.py (root) — shim; canonical implementation lives in 
+    MODULES: """
+    -> meaningfully diverged; review the diff before deleting either.
+
+### file_viewer.py  (similarity 95.6%)
+    root:    918 lines   modules: 885 lines
+    lines only in root: 16   only in modules: 0   changed: 41
+    only in ROOT   : 
+    ROOT   :     """Render a PDF as page images via PyMuPDF. Simple and fast for th
+    MODULES:     import base64
+    ROOT   :     return
+    MODULES:         _view_text_fallback(file_path)
+    ROOT   :         with _vsection("📋 Well header"):
+    MODULES:         with st.expander("📋 Well header", expanded=True):
+    -> meaningfully diverged; review the diff before deleting either.
+
+### page_workbench.py: not a dupe (missing one side)
+
+### pdf_survey_catalog.py  (similarity 99.9%)
+    root:    1631 lines   modules: 1631 lines
+    lines only in root: 0   only in modules: 0   changed: 1
+    ROOT   :         r'(?:UWI|API)(?:\s*(?:NUM(?:BER)?|NO|#|/\s*UWI|/\s*API))?\s*[:
+    MODULES:         r'(?:UWI|API|API.?NUM|API.?NO)[:\s]+([0-9\-]{10,20})',
+    -> nearly identical; safe to keep the live copy and delete the other
+       AFTER porting any one-off fix (e.g. the UWI regex) into the live one.
+
+### pipeline_batch_ui.py: not a dupe (missing one side)
+
+### shapefile_catalog.py  (similarity 99.9%)
+    root:    903 lines   modules: 902 lines
+    lines only in root: 1   only in modules: 0   changed: 0
+    only in ROOT   :                     break
+    -> nearly identical; safe to keep the live copy and delete the other
+       AFTER porting any one-off fix (e.g. the UWI regex) into the live one.
+
+=== recommendation ===
+  For pdf_survey_catalog.py specifically: the ROOT copy has the new UWI regex, the
+  MODULES copy (which the app prefers) does not. If the rest is identical, port JUST
+  the regex line into modules\, then delete root. Full unified diff:
+  fc root\pdf_survey_catalog.py modules\pdf_survey_catalog.py   (Windows)

@@ -1,0 +1,31 @@
+=== is this a git repo? ===
+  inside work tree: true
+  current branch: session3-h3-grid
+  remote(s): origin	https://github.com/perrystokes00/data-wrangler-v3.git (fetch)
+origin	https://github.com/perrystokes00/data-wrangler-v3.git (push)
+  last commit: 41cd577 WITSML: identity fallback reads nameWell/uidWell when classifier misses (trajectory etc.)
+  uncommitted changes: 275 file(s)
+
+=== working tree size (what a naive commit would include) ===
+  total: 58247 files, 3685 MB
+  largest top-level dirs:
+    1540 MB  venv
+     597 MB  geojson
+     515 MB  .
+     334 MB  spatial
+     293 MB  backup
+     293 MB  schema_registry
+      62 MB  output
+      23 MB  assets
+       4 MB  documentation
+       4 MB  sql
+
+=== should be gitignored (don't commit these) ===
+    EXISTS: venv\  <- add to .gitignore
+    EXISTS: __pycache__\  <- add to .gitignore
+
+=== recommendation ===
+  Already a repo. Plan:
+   1. Ensure .gitignore covers venv/__pycache__/.vs/download/_trash
+   2. git add -A ; git commit -m 'snapshot before cleanup'
+   3. git push (if a remote exists) or add one

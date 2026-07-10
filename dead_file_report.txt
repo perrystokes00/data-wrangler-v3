@@ -1,0 +1,563 @@
+repo: C:\Users\perry\OneDrive\Documents\PPDM\claude_use_ai\data_wrangler\data_wrangler_v3
+entry points: ['app_v3.py', 'page_ai_importer.py', 'page_bulk.py', 'page_catalog_search.py', 'page_data_model.py', 'page_db_explorer.py', 'page_dv_catalog.py', 'page_extraction_inspector.py']
+total .py files: 579
+  ACTIVE (reachable by import from entry): 165
+  STRING-REFED (named somewhere — likely dynamic load): 71
+  VERSION-DUP (name looks like an old copy): 11
+  ORPHAN (no import, no string ref): 332
+  (parse errors in 3 files — couldn't analyze those)
+
+=== VERSION-DUP families (multiple files, same base name) ===
+  '__init__': download\__init__.py, download\mnt\user-data\outputs\dataview_v3\format_library\__init__.py, download\mnt\user-data\outputs\dataview_v3\importer\__init__.py, download\mnt\user-data\outputs\dataview_v3\translators\__init__.py, importer\__init__.py, loaders\__init__.py, loaders\core\__init__.py, loaders\plugins\__init__.py, modules\__init__.py, translators\__init__.py
+       str-ref  download\__init__.py
+       str-ref  download\mnt\user-data\outputs\dataview_v3\format_library\__init__.py
+       str-ref  download\mnt\user-data\outputs\dataview_v3\importer\__init__.py
+       str-ref  download\mnt\user-data\outputs\dataview_v3\translators\__init__.py
+       str-ref  importer\__init__.py
+       str-ref  loaders\__init__.py
+       str-ref  loaders\core\__init__.py
+       str-ref  loaders\plugins\__init__.py
+       str-ref  modules\__init__.py
+       str-ref  translators\__init__.py
+  'app': app_v3.py, backup\app_v3.py
+       ACTIVE   app_v3.py
+       str-ref  backup\app_v3.py
+  'bcp_capture': bcp_capture.py, modules\bcp_capture.py
+       ACTIVE   bcp_capture.py
+       ACTIVE   modules\bcp_capture.py
+  'boem_status_codes': boem_status_codes.py, docs\boem_status_codes.py
+       ACTIVE   boem_status_codes.py
+       unused   docs\boem_status_codes.py
+  'build_catalog_mirror': build_catalog_mirror.py, sql\build_catalog_mirror.py
+       ACTIVE   build_catalog_mirror.py
+       str-ref  sql\build_catalog_mirror.py
+  'catalog_capture': catalog_capture.py, modules\catalog_capture.py
+       ACTIVE   catalog_capture.py
+       ACTIVE   modules\catalog_capture.py
+  'column_mapper': download\mnt\user-data\outputs\dataview_v3\importer\column_mapper.py, importer\column_mapper.py
+       unused   download\mnt\user-data\outputs\dataview_v3\importer\column_mapper.py
+       unused   importer\column_mapper.py
+  'db': modules\db.py, modules\db_v3.py
+       ACTIVE   modules\db.py
+       unused   modules\db_v3.py
+  'dv_office_loader': dv_office_loader.py, modules\dv_office_loader.py
+       ACTIVE   dv_office_loader.py
+       ACTIVE   modules\dv_office_loader.py
+  'dv_pipeline': backup\dv_pipeline.py, spatial\dv_pipeline.py
+       ACTIVE   backup\dv_pipeline.py
+       str-ref  spatial\dv_pipeline.py
+  'dv_standards_seed': backup\dv_standards_seed.py, dv_standards_seed.py
+       ACTIVE   dv_standards_seed.py
+       str-ref  backup\dv_standards_seed.py
+  'dw_utils': download\mnt\user-data\outputs\dataview_v3\dw_utils.py, dw_utils.py
+       ACTIVE   dw_utils.py
+       unused   download\mnt\user-data\outputs\dataview_v3\dw_utils.py
+  'file_viewer': file_viewer.py, modules\file_viewer.py
+       ACTIVE   file_viewer.py
+       ACTIVE   modules\file_viewer.py
+  'find_uom_ref': find_uom_ref (1).py, find_uom_ref.py
+       unused   find_uom_ref (1).py
+       str-ref  find_uom_ref.py
+  'fk_catalog': modules\fk_catalog.py, modules\fk_catalog_v3.py
+       str-ref  modules\fk_catalog.py
+       unused   modules\fk_catalog_v3.py
+  'format_detective': download\mnt\user-data\outputs\dataview_v3\importer\format_detective.py, importer\format_detective.py
+       unused   download\mnt\user-data\outputs\dataview_v3\importer\format_detective.py
+       unused   importer\format_detective.py
+  'gold_key_check': _scratch\gold_key_check.py, gold_key_check.py
+       str-ref  gold_key_check.py
+       str-ref  _scratch\gold_key_check.py
+  'load_core_photos': docs\load_core_photos.py, load_core_photos.py
+       unused   load_core_photos.py
+       unused   docs\load_core_photos.py
+  'load_kgs_geojson': geojson\load_kgs_geojson (8).py, geojson\load_kgs_geojson.py
+       unused   geojson\load_kgs_geojson (8).py
+       str-ref  geojson\load_kgs_geojson.py
+  'page_file_catalog': page_file_catalog.py, page_file_catalog_v3.py
+       ACTIVE   page_file_catalog.py
+       ACTIVE   page_file_catalog_v3.py
+  'page_pipeline': page_pipeline.py, page_pipeline_old.py, page_pipeline_v3.py
+       ACTIVE   page_pipeline.py
+       ACTIVE   page_pipeline_old.py
+       ACTIVE   page_pipeline_v3.py
+  'page_pipeline_tools': page_pipeline_tools (1).py, page_pipeline_tools.py
+       ACTIVE   page_pipeline_tools (1).py
+       ACTIVE   page_pipeline_tools.py
+  'page_selected_documents': page_selected_documents (12).py, page_selected_documents.py, page_selected_documents_old.py
+       ACTIVE   page_selected_documents (12).py
+       ACTIVE   page_selected_documents.py
+       ACTIVE   page_selected_documents_old.py
+  'page_well_documents': page_well_documents - Copy.py, page_well_documents.py
+       ACTIVE   page_well_documents - Copy.py
+       ACTIVE   page_well_documents.py
+  'page_well_map': backup\page_well_map.py, page_well_map - Copy.py, page_well_map.py
+       ACTIVE   page_well_map - Copy.py
+       ACTIVE   page_well_map.py
+       ACTIVE   backup\page_well_map.py
+  'page_well_map_baseline_2': backup\page_well_map_baseline_2.py, page_well_map_baseline_2.py
+       ACTIVE   page_well_map_baseline_2.py
+       ACTIVE   backup\page_well_map_baseline_2.py
+  'page_workbench': modules\page_workbench.py, page_workbench.py
+       ACTIVE   page_workbench.py
+       ACTIVE   modules\page_workbench.py
+  'patch_capture_syscols': _archive_20260703_165400\patch_capture_syscols (1).py, _archive_20260703_165400\patch_capture_syscols.py
+       unused   _archive_20260703_165400\patch_capture_syscols (1).py
+       unused   _archive_20260703_165400\patch_capture_syscols.py
+  'patch_check_badids': .vs\patch_check_badids.py, tools\patch_check_badids.py
+       unused   .vs\patch_check_badids.py
+       unused   tools\patch_check_badids.py
+  'pdf_survey_catalog': modules\pdf_survey_catalog.py, pdf_survey_catalog.py
+       ACTIVE   pdf_survey_catalog.py
+       ACTIVE   modules\pdf_survey_catalog.py
+  'pipeline_batch_ui': modules\pipeline_batch_ui.py, pipeline_batch_ui.py
+       unused   pipeline_batch_ui.py
+       unused   modules\pipeline_batch_ui.py
+  'prep_rrc_texas': backup\prep_rrc_texas.py, prep_rrc_texas.py
+       ACTIVE   prep_rrc_texas.py
+       str-ref  backup\prep_rrc_texas.py
+  'profile_files': modules\profile_files.py, profile_files.py
+       unused   profile_files.py
+       unused   modules\profile_files.py
+  'promote_fk_review': modules\promote_fk_review.py, promote_fk_review.py
+       str-ref  promote_fk_review.py
+       ACTIVE   modules\promote_fk_review.py
+  'rebuild_db': rebuild_db.py, sql\rebuild_db.py
+       str-ref  rebuild_db.py
+       str-ref  sql\rebuild_db.py
+  'run': loaders\run.py, run.py
+       str-ref  run.py
+       str-ref  loaders\run.py
+  'shapefile_catalog': modules\shapefile_catalog.py, shapefile_catalog.py
+       ACTIVE   shapefile_catalog.py
+       ACTIVE   modules\shapefile_catalog.py
+  'standardize_well_attrs': standardize\standardize_well_attrs.py, standardize_well_attrs.py
+       unused   standardize_well_attrs.py
+       unused   standardize\standardize_well_attrs.py
+
+=== ORPHANS (strongest dead-file candidates — review before deleting) ===
+  .vs\patch_check_badids.py
+  _archive_20260703_165400\patch_capture_skip.py
+  _archive_20260703_165400\patch_capture_syscols.py
+  _archive_20260703_165400\patch_enrich_gate.py
+  _archive_20260703_165400\patch_enrich_indexhint.py
+  _archive_20260703_165400\patch_enrich_loop.py
+  _archive_20260703_165400\patch_enrich_varchar.py
+  _archive_20260703_165400\patch_las_fast.py
+  _archive_20260703_165400\patch_new_files_only.py
+  _archive_20260703_165400\patch_scan_fingerprint.py
+  _archive_20260703_165400\patch_scout_period.py
+  _archive_20260703_165400\patch_seismic_skip.py
+  _archive_20260703_165400\patch_workbench_vault.py
+  _archive_20260703_165611\check_cat_field.py
+  _archive_20260703_165611\check_dedup.py
+  _archive_20260703_165611\check_dlis_wells.py
+  _archive_20260703_165611\check_gfc_staging.py
+  _archive_20260703_165611\check_period.py
+  _archive_20260703_165611\check_seis_geom.py
+  _archive_20260703_165611\check_spatial_run.py
+  _archive_20260703_165611\check_spatial_tables.py
+  _archive_20260703_165611\check_uwi_format.py
+  _archive_20260703_165611\check_well_docs.py
+  _archive_20260703_165611\check_wells.py
+  _archive_20260703_165611\classify_check.py
+  _archive_20260703_165611\coverage_check.py
+  _archive_20260703_165611\curve_check.py
+  _archive_20260703_165611\detail_hold_diag.py
+  _archive_20260703_165611\diag_seldocs.py
+  _archive_20260703_165611\dlis_probe.py
+  _archive_20260703_165611\dup_check.py
+  _archive_20260703_165611\dv_curve_check.py
+  _archive_20260703_165611\enrich_join_probe.py
+  _archive_20260703_165611\geo_ref_probe.py
+  _archive_20260703_165611\header_probe.py
+  _archive_20260703_165611\io_vs_cpu_probe.py
+  _archive_20260703_165611\las_capture_debug.py
+  _archive_20260703_165611\las_in_capture.py
+  _archive_20260703_165611\las_matched_uwi.py
+  _archive_20260703_165611\linkage_check.py
+  _archive_20260703_165611\log_files_check.py
+  _archive_20260703_165611\log_multicore_check.py
+  _archive_20260703_165611\office_pdf_diag.py
+  _archive_20260703_165611\origin_probe.py
+  _archive_20260703_165611\promote_pk_check.py
+  _archive_20260703_165611\reconcile_check.py
+  _archive_20260703_165611\resolve_diag.py
+  _archive_20260703_165611\segy_check.py
+  _archive_20260703_165611\seis_geom_probe.py
+  _archive_20260703_165611\tag_diag.py
+  _archive_20260703_165611\test_las2.py
+  _archive_20260703_165611\test_las_capture.py
+  _archive_20260703_165611\test_outline_wkt.py
+  _archive_20260703_165611\test_promote_fast.py
+  _archive_20260703_165611\test_promote_spatial.py
+  _archive_20260703_165611\vault_state_diag.py
+  _goldcols.py
+  _scratch\crawl_bench.py
+  _scratch\fk_catalog_check.py
+  _scratch\gold_suffix_diag.py
+  _scratch\h3_diag.py
+  _show_capture.py
+  add_segy_fastpath.py
+  analyze_dead_files.py
+  bcp_capture_bench.py
+  bcp_probe.py
+  bench_capture.py
+  bench_capture_parallel.py
+  bench_profile.py
+  binary_curve_stage.py
+  bogus_seis.py
+  build_county_geojson_ND_GOM.py
+  build_county_geojson_gom.py
+  build_county_geojson_nd.py
+  capture_ran.py
+  catalog_audit.py
+  catalog_breakdown.py
+  check500.py
+  claim_timing.py
+  classify_dir.py
+  classify_inventory.py
+  clean_null_periods.py
+  clean_slate.py
+  cleanup_now.py
+  clear_captured_hash.py
+  clear_dlis_wells.py
+  clear_seismic.py
+  clear_stale_hash.py
+  clear_stuck_state.py
+  clone_db.py
+  clone_schema.py
+  collation.py
+  compare_extract.py
+  copy_n_files.py
+  copy_reference_data.py
+  copy_views.py
+  curve_eligibility.py
+  curve_uwi_now.py
+  db_cleanup.py
+  db_health.py
+  debug_survey.py
+  dedup_prod_volume.py
+  defrag_queue.py
+  delete_ks_by_kid.py
+  delete_ks_no_docs.py
+  delete_ks_uwi15.py
+  deploy.py
+  deploy_deep_fixes.py
+  deploy_federation.py
+  dev_resume.py
+  diag.py
+  diagnose.py
+  diagnose_transport.py
+  diff_pipeline.py
+  dlis_names.py
+  doc_classifier.py
+  doc_join.py
+  doc_query.py
+  docs\boem_status_codes.py
+  docs\load_core_photos.py
+  docs_per_well.py
+  download\mnt\user-data\outputs\dataview_v3\dw_utils.py
+  download\mnt\user-data\outputs\dataview_v3\importer\column_mapper.py
+  download\mnt\user-data\outputs\dataview_v3\importer\format_detective.py
+  errs.py
+  errs_full.py
+  extract_by_list.py
+  extract_matched_wells.py
+  find_bad_geom.py
+  find_blob_script.py
+  find_field_shp.py
+  find_las_regression.py
+  find_pipeline_page.py
+  find_status_panel.py
+  finish_gold_insert.py
+  finish_patches.py
+  force_capture.py
+  function Deploy.py
+  fwh_widths.py
+  gen_schema_docs.py
+  gen_synthetic_completions.py
+  gen_view.py
+  generate_core_images.py
+  generate_county_boundaries.py
+  generate_dataview_schema.py
+  generate_dataview_testdata.py
+  generate_db_schema.py
+  generate_licence.py
+  generate_snapshot.py
+  geo_keys.py
+  geography_layers,py.py
+  geojson\build_county_geojson_kansas.py
+  geojson\load_kgs_geojson (8).py
+  gold_dupe_check.py
+  gold_fix_uwi14.py
+  gold_key_columns.py
+  gold_match.py
+  gold_match_diag.py
+  gold_rebuild.py
+  grids.py
+  h3_demo.py
+  h3_spread.py
+  h3_status.py
+  hash_keys.py
+  importer\column_mapper.py
+  importer\format_detective.py
+  index_well_master.py
+  ingest_to_snowflake.py
+  ingest_to_snowflake_fast.py
+  inspect_bad_wkt.py
+  inspect_cat_land.py
+  kgs_las.py
+  kill_all_py.py
+  kill_app.py
+  kill_now.py
+  kill_pid.py
+  kill_streamlit.py
+  kill_tree.py
+  ks_coord_fill.py
+  ks_coord_fill_fast.py
+  ks_gold_uwi14_now.py
+  ks_in_gold.py
+  ks_in_gold_fast.py
+  las_dump.py
+  las_report_all.py
+  las_scan.py
+  las_triage.py
+  lasfiles_gold_match.py
+  list_seis_tables.py
+  load_core_photos.py
+  load_kgs.py
+  load_ks_header_to_gold (5).py
+  load_ks_header_to_gold.py
+  load_rrc_maf016.py
+  load_rrc_w1_permits.py
+  load_well_header_csv.py
+  load_well_master.py
+  loaders\core\plugin_base.py
+  loaders\core\registry.py
+  loaders\core\runner.py
+  loaders\core\stats.py
+  make_test_dataset.py
+  make_test_dataset_all.py
+  make_well_shapefile.py
+  migrate_petroleum_regions.py
+  migrate_state_regions.py
+  missing_files.py
+  modules\curve_registry.py
+  modules\delete_util.py
+  modules\format_library.py
+  modules\h3_map_layer.py
+  modules\import_hashlib.py
+  modules\patch_dedup.py
+  modules\pipeline_batch_ui.py
+  modules\profile_files.py
+  modules\seed_catalog.py
+  modules\wl_file_map.py
+  nd_gdb.py
+  pending_detail.py
+  pipeline_batch_ui.py
+  pipeline_profiler.py
+  pipeline_status.py
+  poc_area_sanity.py
+  poc_geog_area.py
+  poc_geog_fix.py
+  poc_seis3d_geom.py
+  populate_dv_well_protraction_area.py
+  populate_h3.py
+  prep_fcp_run.py
+  profile_capture.py
+  profile_files.py
+  project_map.py
+  promote_las_catalog_fast.py
+  promote_report.py
+  promote_timing.py
+  provenance_audit.py
+  py clear_stuck.py
+  py_check500.py
+  read_after_capture.py
+  read_run_full.py
+  ready_check.py
+  real_link_path.py
+  recapture.py
+  recatalog_seis.py
+  recover.py
+  ref_holds.py
+  refresh_demo_grids.py
+  remaining_shp.py
+  repair_promote_functions.py
+  repromote.py
+  repromote2.py
+  resolve_log_identity.py
+  run_fixture_triage.py
+  run_h3.py
+  run_promote_now.py
+  run_stage.py
+  scan_uwi_deps.py
+  schema_cache.py
+  score_inventory_batch_fast.py
+  scripts\load_ks_kgs_wells.py
+  scripts\patch_clean_count.py
+  seed_catalog\documents\build_seed_catalog.py
+  seed_deep_refs.py
+  seed_las_catalog.py
+  seed_political.py
+  seed_queue.py
+  seed_references.py
+  seed_refs.py
+  seed_refs2.py
+  seed_uom.py
+  seis_line_cols.py
+  seis_when.py
+  setup_dataview.py
+  setup_wranglerview.py
+  show_cat_schema.py
+  show_damage.py
+  show_int_exact.py
+  shp_to_protraction_geojson.py
+  shrink_log.py
+  skip_detail.py
+  skips.py
+  slow_files.py
+  spatial_seeder.py
+  sql\build_well_documents_view.py
+  sql\check_well.py
+  sql\schema_sync.py
+  sql\validate_v_gom_well_attributes.py
+  stage_timer.py
+  standardize\build_well_master_gold.py
+  standardize\standardize_well_attrs.py
+  standardize_well_attrs.py
+  stop_pipeline.py
+  tidy_scratch.py
+  time_shp_outline.py
+  tools\build_fk_catalog.py
+  tools\build_schema_domain.py
+  tools\esri.py
+  tools\generate_osdu_wells.py
+  tools\load_survey_pdfs.py
+  tools\patch_check_badids.py
+  trace_field.py
+  trace_last_run.py
+  trace_link_gap.py
+  trace_nulls.py
+  trace_pipeline.py
+  trace_pipeline2.py
+  translators\co_cogcc_well.py
+  translators\enverus_well.py
+  translators\esri_shapefile.py
+  translators\ihs_well_header.py
+  translators\ks_kgs_well_header.py
+  translators\las_2_0.py
+  translators\load_tx_rrc_well_master.py
+  translators\nd_ndic_well_header.py
+  translators\ppdm_csv.py
+  translators\tx_rrc_w1_permit.py
+  translators\tx_rrc_well_master.py
+  upload_ok.py
+  uwi_errs.py
+  uwi_format.py
+  validate_h3_backfill.py
+  validate_h3_views.py
+  validate_v_well.py
+  vault_run.py
+  walk_and_load.py
+  walk_bulk.py
+  walk_fast.py
+  walk_petroleum.py
+  whats_at.py
+  which_log.py
+  who_locks.py
+  why_pending.py
+
+=== VERSION-DUP (name suggests old copy, not reachable) ===
+  _archive_20260703_165400\patch_capture_syscols (1).py
+  _archive_20260703_165611\mark_test.py
+  _archive_20260703_165611\poc_geography_test.py
+  build_well_geojson_old.py
+  colorado_origin.py
+  download\app_v3 (8).py
+  find_uom_ref (1).py
+  h3_map_test.py
+  modules\db_v3.py
+  modules\fk_catalog_v3.py
+  walk_test.py
+
+=== STRING-REFED (reached only by name — verify these are real dynamic loads) ===
+  _archive_20260703_165400\cc_check.py
+  _archive_20260703_165400\coll_check.py
+  _archive_20260703_165400\enrich_diag.py
+  _archive_20260703_165400\gold_index_probe.py
+  _archive_20260703_165400\las_steps.py
+  _archive_20260703_165400\las_time.py
+  _archive_20260703_165400\log_commit_probe.py
+  _archive_20260703_165400\prime_probe.py
+  _archive_20260703_165400\recovery_check.py
+  _archive_20260703_165400\spatial_index_probe.py
+  _archive_20260703_165400\vault_fetch_probe.py
+  _archive_20260703_165400\vault_fetch_probe3.py
+  _scratch\bench2.py
+  _scratch\catalog_coord_fix.py
+  _scratch\check_tray_persist.py
+  _scratch\coord_backfill.py
+  _scratch\coord_enrich_diag.py
+  _scratch\coord_h3_status.py
+  _scratch\gold_key_check.py
+  _scratch\pipeline_funnel.py
+  _scratch\provenance_check.py
+  _scratch\read_bench.py
+  _scratch\stamp_provenance.py
+  backup\app_v3.py
+  backup\dv_standards_seed.py
+  backup\prep_rrc_texas.py
+  breakdown.py
+  build_geojson_from_snowflake.py
+  bulk_runner.py
+  config.py
+  download\__init__.py
+  download\mnt\user-data\outputs\dataview_v3\format_library\__init__.py
+  download\mnt\user-data\outputs\dataview_v3\importer\__init__.py
+  download\mnt\user-data\outputs\dataview_v3\translators\__init__.py
+  enrich_from_dbf.py
+  ensure_catalog_columns.py
+  entity_seeder.py
+  export_for_snowflake.py
+  federation_map.py
+  find_uom_ref.py
+  gap.py
+  geojson\build_county_geojson.py
+  geojson\load_kgs_geojson.py
+  gold_key_check.py
+  importer\__init__.py
+  las_report.py
+  load_nd_gdb.py
+  load_ok_csv.py
+  loaders\__init__.py
+  loaders\core\__init__.py
+  loaders\core\bcp_transport.py
+  loaders\core\cleaning.py
+  loaders\plugins\__init__.py
+  loaders\plugins\kgs.py
+  loaders\run.py
+  modules\__init__.py
+  modules\fk_catalog.py
+  parallel_crawl.py
+  pipeline_proc_runner.py
+  promote_fk_review.py
+  rebuild_db.py
+  reconcile.py
+  run.py
+  run_load.py
+  run_promote.py
+  spatial\dv_pipeline.py
+  sql\build_catalog_mirror.py
+  sql\rebuild_db.py
+  translators\__init__.py
+  upload_to_snowflake.py
+  worker_pool.py
+
+=== NOTES ===
+  ORPHAN = not imported anywhere AND its name never appears as a string. Safest to
+           remove, but eyeball each (could be a script you run directly, or an entry).
+  VERSION-DUP = looks like foo_v2 / foo_old / foo (1); check against the ACTIVE one.
+  STRING-REFED = something mentions its name in a string — could be importlib/st.Page
+           dynamic loading. Do NOT delete without confirming.
+  Static analysis can't see every dynamic import — treat this as a REVIEW LIST.
