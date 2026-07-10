@@ -624,7 +624,7 @@ with st.sidebar:
                 if st.button("🔄", key="sb_list_dbs",
                              help="List databases on this server"):
                     try:
-                        from modules.db import DBConfig, connect as _lc
+                        from dataview.core.db import DBConfig, connect as _lc
                         _lr = _lc(DBConfig(
                             server=server, database="master", driver=driver,
                             windows_auth=win_auth,
@@ -697,7 +697,7 @@ with st.sidebar:
                     import json as _sjson
                     with open(_sos.path.join(_sreg, _spick), encoding="utf-8") as _sfp:
                         _sraw = _sjson.load(_sfp)
-                    from modules.schema import load_schema_from_dict, EXPECTED_ROOT_KEY
+                    from dataview.core.schema import load_schema_from_dict, EXPECTED_ROOT_KEY
                     # Auto-detect the array root key
                     for _sk, _sv in _sraw.items():
                         if isinstance(_sv, list):
@@ -725,7 +725,7 @@ with st.sidebar:
                         type="primary", use_container_width=True):
             with st.spinner("Connecting…"):
                 try:
-                    from modules.db import DBConfig, connect as _connect
+                    from dataview.core.db import DBConfig, connect as _connect
                     cfg = DBConfig(
                         server       = server,
                         database     = database,
@@ -759,7 +759,7 @@ with st.sidebar:
         if col_b.button("Demo", key="sb_demo",
                         use_container_width=True):
             try:
-                from modules.db import connect_demo
+                from dataview.core.db import connect_demo
                 result = connect_demo()
                 S.engine    = result.engine
                 S.connected = True
@@ -807,7 +807,7 @@ with st.sidebar:
                        "schema and reference tables (dv_r_*, dv_country/"
                        "province_state/county).")
             try:
-                from modules.demo_reset import RESET_VERSION as _reset_ver
+                from dataview.core.demo_reset import RESET_VERSION as _reset_ver
                 st.caption(f"✅ reset engine loaded: **{_reset_ver}**")
             except Exception:
                 st.caption("⚠️ OLD reset engine still loaded (no version "
@@ -828,7 +828,7 @@ with st.sidebar:
                     if st.button("✓ Confirm", key="reset_demo_confirm",
                                  type="primary", use_container_width=True):
                         try:
-                            from modules.demo_reset import reset_demo_data
+                            from dataview.core.demo_reset import reset_demo_data
                             S["_reset_demo_result"] = reset_demo_data(S.engine)
                         except Exception as _re:
                             S["_reset_demo_result"] = {"error": str(_re)}
@@ -995,7 +995,7 @@ if S.app_mode == "splash":
 # ── WELL MAP ──────────────────────────────────────────────────────────
 elif S.app_mode == "well_map":
     try:
-        import page_well_map
+        from dataview.mapping import page_well_map
         fn = getattr(page_well_map, "run", None) or getattr(page_well_map, "render", None)
         if fn:
             fn(S.engine)
@@ -1007,7 +1007,7 @@ elif S.app_mode == "well_map":
 # ── DOCUMENTS ─────────────────────────────────────────────────────────
 elif S.app_mode == "documents":
     try:
-        import page_well_documents
+        from dataview.file_catalog import page_well_documents
         page_well_documents.run(S.engine)
     except Exception as e:
         st.error(f"Documents error: {e}")
@@ -1033,7 +1033,7 @@ elif S.app_mode == "db_explorer":
     try:
         # Make engine accessible both as attribute and dict key
         st.session_state["engine"] = S.engine
-        import page_db_explorer
+        from dataview.db_explorer import page_db_explorer
         page_db_explorer.render(S)
     except Exception as e:
         st.error(f"DB Explorer error: {e}")
@@ -1043,7 +1043,7 @@ elif S.app_mode == "db_explorer":
 # ── MODEL OVERVIEW ────────────────────────────────────────────────────
 elif S.app_mode == "schema_overview":
     try:
-        import page_schema_overview
+        from dataview.db_explorer import page_schema_overview
         page_schema_overview.run(S.engine)
     except Exception as e:
         st.error(f"Model Overview error: {e}")
@@ -1053,10 +1053,10 @@ elif S.app_mode == "schema_overview":
 # ── FILE Inventory ──────────────────────────────────────────────────────
 elif S.app_mode == "file_inv":
     try:
-        from modules.db import _detect_dialect
+        from dataview.core.db import _detect_dialect
         _raw = _detect_dialect(S.engine) or "mssql"
         _dialect = {"sqlserver": "mssql", "sql_server": "mssql"}.get(_raw, _raw)
-        import page_file_manager
+        from dataview.file_catalog import page_file_manager
         page_file_manager.render(S.engine, _dialect)
     except Exception as e:
         st.error(f"File Manager error: {e}")
@@ -1064,10 +1064,10 @@ elif S.app_mode == "file_inv":
 # ── FILE CATALOG ─────────────────────────────────────────────────────
 elif S.app_mode == "file_catalog":
     try:
-        from modules.db import _detect_dialect
+        from dataview.core.db import _detect_dialect
         _raw = _detect_dialect(S.engine) or "mssql"
         _dialect = {"sqlserver": "mssql", "sql_server": "mssql"}.get(_raw, _raw)
-        import page_file_catalog
+        from dataview.file_catalog import page_file_catalog
         page_file_catalog.run(S.engine, _dialect)
     except Exception as e:
         st.error(f"File Catalog error: {e}")
@@ -1075,10 +1075,10 @@ elif S.app_mode == "file_catalog":
 # ── WORKBENCH ─────────────────────────────────────────────────────────
 elif S.app_mode == "workbench":
     try:
-        from modules.db import _detect_dialect
+        from dataview.core.db import _detect_dialect
         _raw = _detect_dialect(S.engine) or "mssql"
         _dialect = {"sqlserver": "mssql", "sql_server": "mssql"}.get(_raw, _raw)
-        import page_workbench
+        from dataview.file_catalog import page_workbench
         page_workbench.run(S.engine, _dialect)
     except Exception as e:
         st.error(f"File Catalog error: {e}")
@@ -1086,10 +1086,10 @@ elif S.app_mode == "workbench":
 # ── PIPELINE MONITOR ──────────────────────────────────────────────────
 elif S.app_mode == "monitor":
     try:
-        from modules.db import _detect_dialect
+        from dataview.core.db import _detect_dialect
         _raw = _detect_dialect(S.engine) or "mssql"
         _dialect = {"sqlserver": "mssql", "sql_server": "mssql"}.get(_raw, _raw)
-        import page_monitor
+        from dataview.file_catalog import page_monitor
         page_monitor.run(S.engine, _dialect)
     except Exception as e:
         st.error(f"Monitor error: {e}")
@@ -1097,30 +1097,30 @@ elif S.app_mode == "monitor":
 # ── EXTRACTION INSPECTOR ──────────────────────────────────────────────
 elif S.app_mode == "inspector":
     try:
-        from modules.db import _detect_dialect
+        from dataview.core.db import _detect_dialect
         _raw = _detect_dialect(S.engine) or "mssql"
         _dialect = {"sqlserver": "mssql", "sql_server": "mssql"}.get(_raw, _raw)
-        import page_extraction_inspector
+        from dataview.file_catalog import page_extraction_inspector
         page_extraction_inspector.run(S.engine, _dialect)
     except Exception as e:
         st.error(f"Extraction Inspector error: {e}")
 
 elif S.app_mode == "triage":
     try:
-        from modules.db import _detect_dialect
+        from dataview.core.db import _detect_dialect
         _raw = _detect_dialect(S.engine) or "mssql"
         _dialect = {"sqlserver": "mssql", "sql_server": "mssql"}.get(_raw, _raw)
-        import page_triage
+        from dataview.file_catalog import page_triage
         page_triage.render(S.engine, _dialect)
     except Exception as e:
         st.error(f"Triage error: {e}")
 
 elif S.app_mode == "promote":
     try:
-        from modules.db import _detect_dialect
+        from dataview.core.db import _detect_dialect
         _raw = _detect_dialect(S.engine) or "mssql"
         _dialect = {"sqlserver": "mssql", "sql_server": "mssql"}.get(_raw, _raw)
-        import page_triage
+        from dataview.file_catalog import page_triage
         page_triage.render_promote(S.engine, _dialect)
     except Exception as e:
         st.error(f"Promote error: {e}")
@@ -1129,10 +1129,10 @@ elif S.app_mode == "promote":
 # ── SPATIAL LAYERS ────────────────────────────────────────────────────
 elif S.app_mode == "file_scan":
     try:
-        from modules.db import _detect_dialect
+        from dataview.core.db import _detect_dialect
         _raw = _detect_dialect(S.engine) or "mssql"
         _dialect = {"sqlserver": "mssql", "sql_server": "mssql"}.get(_raw, _raw)
-        import page_file_manager
+        from dataview.file_catalog import page_file_manager
         page_file_manager.render(S.engine, _dialect)
     except Exception as e:
         st.error(f"File Manager error: {e}")
@@ -1143,7 +1143,7 @@ elif S.app_mode == "spatial":
                "Layers registered here appear in the Well Map.")
 
     try:
-        from modules.dv_spatial_loader import list_layers, delete_layer
+        from dataview.mapping.dv_spatial_loader import list_layers, delete_layer
         layers = list_layers(S.engine)
 
         if layers:
@@ -1170,7 +1170,7 @@ elif S.app_mode == "spatial":
 # ── REFERENCE TABLES ─────────────────────────────────────────────────
 elif S.app_mode == "ref_tables":
     try:
-        import page_standards_manager
+        from dataview.reference_tables import page_standards_manager
         page_standards_manager.render(S.engine)
     except Exception as e:
         st.error(f"Standards Manager error: {e}")
@@ -1179,7 +1179,7 @@ elif S.app_mode == "ref_tables":
 
 elif S.app_mode == "region_builder":
        try:
-           import page_region_builder
+           from dataview.region_builder import page_region_builder
            page_region_builder.render(S.engine)
        except Exception as e:
            st.error(f"Region Builder error: {e}")
@@ -1188,7 +1188,7 @@ elif S.app_mode == "region_builder":
 
 elif S.app_mode == "pipeline":
     try:
-        import page_pipeline
+        from dataview.import_data import page_pipeline
         page_pipeline.render(S)
     except Exception as e:
         st.error(f"Pipeline error: {e}")

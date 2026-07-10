@@ -18,7 +18,7 @@ import sys
 import pyodbc
 from sqlalchemy import create_engine
 
-from pipeline_profiler import Profiler, analyze
+from dataview.import_data.pipeline_profiler import Profiler, analyze
 
 
 def make_engine(server, database):
@@ -52,7 +52,7 @@ def main():
     since = pcur.fetchone()[0]
 
     if args.old:
-        from catalog_rules import score_inventory_batch as cap
+        from dataview.file_catalog.catalog_rules import score_inventory_batch as cap
         label = "capture_OLD"
     else:
         from score_inventory_batch_fast import score_inventory_batch_fast as cap

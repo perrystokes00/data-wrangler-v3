@@ -15,14 +15,14 @@ import base64
 import streamlit as st
 
 try:
-    from modules.doc_catalog_store import render_catalog_widget as _render_catalog_widget_fn
+    from dataview.file_catalog.doc_catalog_store import render_catalog_widget as _render_catalog_widget_fn
     _STORE_OK = True
 except ImportError:
     _STORE_OK = False
 from pathlib import Path
 
 try:
-    from modules.pdf_survey_catalog import (
+    from dataview.file_catalog.pdf_survey_catalog import (
         scan_directory, classify_pdf, extract_stations,
         validate_stations, load_to_ppdm, summarize_scan,
         RT_DIRECTIONAL, RT_MUDLOG, RT_FORMATION,
@@ -372,7 +372,7 @@ def _render_extract_inline(engine, dialect, frow: dict, uwi: str,
                   type="secondary" if is_cataloged else "primary",
                   use_container_width=True, key="pdf_cat_btn"):
         try:
-            from modules.doc_catalog_store import catalog_document
+            from dataview.file_catalog.doc_catalog_store import catalog_document
             r = catalog_document(
                 engine=engine, file_path=fpath, doc_type=rt,
                 meta=well_info, records=rows, source="PDF_CATALOG")
@@ -405,7 +405,7 @@ def _extract_by_type(fpath: str, rt: str,
     Returns (rows, error_or_None).
     """
     try:
-        from modules.pdf_survey_catalog import (
+        from dataview.file_catalog.pdf_survey_catalog import (
             extract_stations, extract_rft_data, extract_scout_ticket,
             extract_ddr, extract_well_test, extract_petrophysical,
             extract_eowr, extract_casing_cement,
@@ -461,37 +461,37 @@ def _do_load(engine, dialect, rt, well_info, rows, fpath):
     """Load extracted rows to dataview tables by report type."""
     try:
         if rt == RT_DIRECTIONAL:
-            from modules.pdf_survey_catalog import load_to_ppdm
+            from dataview.file_catalog.pdf_survey_catalog import load_to_ppdm
             r = load_to_ppdm(well_info=well_info, stations=rows,
                              engine=engine, dialect=dialect)
 
         elif rt == RT_FORMATION:
-            from modules.pdf_db_loader import load_formation_tops
+            from dataview.file_catalog.pdf_db_loader import load_formation_tops
             r = load_formation_tops(engine=engine, dialect=dialect,
                                     well_info=well_info, rows=rows)
 
         elif rt == RT_RFT:
-            from modules.pdf_db_loader import load_rft
+            from dataview.file_catalog.pdf_db_loader import load_rft
             r = load_rft(engine=engine, dialect=dialect,
                          well_info=well_info, rows=rows)
 
         elif rt == RT_WELL_TEST:
-            from modules.pdf_db_loader import load_well_test
+            from dataview.file_catalog.pdf_db_loader import load_well_test
             r = load_well_test(engine=engine, dialect=dialect,
                                well_info=well_info, rows=rows)
 
         elif rt == RT_CORE:
-            from modules.pdf_db_loader import load_core
+            from dataview.file_catalog.pdf_db_loader import load_core
             r = load_core(engine=engine, dialect=dialect,
                           well_info=well_info, rows=rows)
 
         elif rt == RT_CASING:
-            from modules.pdf_db_loader import load_casing
+            from dataview.file_catalog.pdf_db_loader import load_casing
             r = load_casing(engine=engine, dialect=dialect,
                             well_info=well_info, rows=rows)
 
         elif rt == RT_SCOUT:
-            from modules.pdf_db_loader import load_scout
+            from dataview.file_catalog.pdf_db_loader import load_scout
             r = load_scout(engine=engine, dialect=dialect,
                            well_info=well_info, rows=rows)
 
@@ -1442,7 +1442,7 @@ def _render_load(engine, dialect):
             if st.button("📁 Catalog File", type="secondary",
                          use_container_width=True, key="pdf_catalog_btn"):
                 try:
-                    from modules.doc_catalog_store import catalog_document
+                    from dataview.file_catalog.doc_catalog_store import catalog_document
                     _uwi = well_info.get("uwi", "")
                     r = catalog_document(
                         engine=engine,
@@ -1503,7 +1503,7 @@ def _generic_load(load_type, well_info, rows, engine, dialect, source, dry_run=F
         return {"ok": True, "loaded": len(rows), "errors": []}
 
     try:
-        from modules.pdf_db_loader import (
+        from dataview.file_catalog.pdf_db_loader import (
             load_formation_tops, load_well_test, load_rft,
             load_core, load_casing, load_scout,
         )

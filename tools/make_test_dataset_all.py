@@ -265,9 +265,9 @@ def build(root):
 
 def validate(root):
     try:
-        from modules.file_summarizer import summarize
+        from dataview.file_catalog.file_summarizer import summarize
     except Exception:
-        from file_summarizer import summarize
+        from dataview.file_catalog.file_summarizer import summarize
     rows = []
     for dp, _, files in os.walk(root):
         for fn in files:

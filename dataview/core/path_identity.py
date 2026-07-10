@@ -1,0 +1,139 @@
+r"""
+path_identity.py  —  Data Wrangler v3
+================================================================================
+Derive a file's *identity* from its path/name when the file's internal header
+didn't yield one:
+
+  • wells   -> a candidate UWI14 (14-char zero-padded API) parsed from the
+               filename, then folder segments
+  • seismic -> a candidate survey name parsed from the filename
+
+These are *candidates* — a 10-14 digit run in a name can be a date or a job
+number — so they're meant to be confirmed in the review grid, not trusted blindly.
+
+Used by the review grid (bulk human keying) and, later, by catalog-on-open as
+the fallback rung after internal-header extraction.
+
+Pure-Python, no DB. Importable from the app or runnable as a quick CLI probe:
+    py path_identity.py "C:\data\42-329-12345_GR.las" "C:\seis\Permian_3D_2019.segy"
+"""
+import os
+import re
+import sys
+
+# A run that starts and ends in a digit and is >=10 chars of digits/-_. — the
+# separators get stripped, leaving 10-14 digits for a plausible API.
+_TOKEN = re.compile(r"\d[\d\-_.]{8,}\d")
+
+
+def _basename(path):
+    """Last path segment, splitting on both \\ and / regardless of OS."""
+    return re.split(r"[\\/]", path or "")[-1]
+
+
+def _dirname(path):
+    parts = re.split(r"[\\/]", path or "")
+    return "\\".join(parts[:-1])
+
+
+def norm_uwi14(s):
+    """Normalize any UWI-ish string to a 14-char API key, or None.
+    Strip -_./ and spaces, require all-numeric and 10-14 digits, pad to 14.
+    Rejects all-same-digit runs (e.g. 00000000000000)."""
+    if not s:
+        return None
+    d = re.sub(r"\D", "", str(s))
+    if not (10 <= len(d) <= 14) or len(set(d)) <= 1:
+        return None
+    return (d + "0" * 14)[:14]
+
+
+def uwi14_from_path(path):
+    """Best UWI14 candidate from a path. Filename is tried before folders, and
+    longer digit runs win. Returns (uwi14, source) where source is 'filename'
+    or 'folder', or (None, None) if nothing plausible is found."""
+    path = (path or "").replace("/", "\\")
+    base = _basename(path)
+    folders = _dirname(path)
+
+    def _cands(text):
+        out = []
+        for m in _TOKEN.finditer(text or ""):
+            d = re.sub(r"\D", "", m.group(0))
+            if 10 <= len(d) <= 14 and len(set(d)) > 1:
+                out.append(d)
+        return out
+
+    # (digits, priority): priority 1 = filename, 0 = folder
+    scored = [(d, 1) for d in _cands(base)] + [(d, 0) for d in _cands(folders)]
+    if not scored:
+        return None, None
+    d, pri = max(scored, key=lambda t: (len(t[0]), t[1]))   # most digits, then filename
+    return (d + "0" * 14)[:14], ("filename" if pri == 1 else "folder")
+
+
+def survey_from_path(path):
+    """Candidate seismic survey name from a file path. Prefers the app's
+    seis_filename_parser when available; otherwise cleans up the basename
+    (separators -> spaces, collapse). Returns a string or None."""
+    base = _basename(path)
+    stem = os.path.splitext(base)[0]
+
+    try:                                            # use the app's parser if present
+        from dataview.file_catalog.seis_filename_parser import parse_seis_filename
+        p = parse_seis_filename(base)
+        nm = p.get("survey_name") if isinstance(p, dict) else None
+        if nm and str(nm).strip():
+            return str(nm).strip()
+    except Exception:
+        pass
+
+    nm = re.sub(r"[_\-.]+", " ", stem)
+    nm = re.sub(r"\s+", " ", nm).strip()
+    return nm or None
+
+
+def wellname_from_path(path):
+    """Best-effort well NAME from a LIS/DLIS (or similar) filename, for use as
+    a fallback when the file's own origin/wellsite record has no well name.
+
+    No single naming convention exists, so the heuristic picks the token that
+    carries the well identity: first a token with letters + digits + a dash
+    (e.g. 'A12a-CPP-A2', 'A-5-1'), else a token with letters + digits
+    (e.g. 'A151', 'a0501t01'), else the cleaned stem. Operator prefixes
+    ('Chevron_'), id prefixes ('G030088972__'), run/curve-type/composite
+    suffixes are skipped. Returns a string or None. Heuristic — review
+    downstream; never trust over a real internal value.
+    """
+    stem = _basename(path)
+    if "." in stem:
+        stem = stem.rsplit(".", 1)[0]
+    stem = stem.strip()
+    if not stem:
+        return None
+    toks = [t for t in re.split(r"[_\s]+", stem) if t]
+
+    def _has_alpha(t): return any(c.isalpha() for c in t)
+    def _has_digit(t): return any(c.isdigit() for c in t)
+
+    for t in toks:                         # 1) letters + digits + dash
+        if "-" in t and _has_alpha(t) and _has_digit(t):
+            return t
+    for t in toks:                         # 2) letters + digits
+        if _has_alpha(t) and _has_digit(t):
+            return t
+    return " ".join(toks) or None          # 3) cleaned stem
+
+
+def identity_from_path(path, kind):
+    """Convenience dispatch. kind in {'well','seis'}.
+    well -> (uwi14, source); seis -> (survey_name, 'filename')."""
+    if kind == "well":
+        return uwi14_from_path(path)
+    return survey_from_path(path), "filename"
+
+
+if __name__ == "__main__":
+    for p in sys.argv[1:]:
+        u, src = uwi14_from_path(p)
+        print(f"{p}\n  UWI14  : {u}  ({src})\n  SURVEY : {survey_from_path(p)}")

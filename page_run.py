@@ -145,7 +145,7 @@ def render(engine=None):
                    "so the next run is a full cold run. Reference / spatial / "
                    "bulk-loaded data is left intact.")
         try:
-            from modules.demo_reset import RESET_VERSION as _rv
+            from dataview.core.demo_reset import RESET_VERSION as _rv
             st.caption(f"reset engine: {_rv}")
         except Exception:
             pass
@@ -160,7 +160,7 @@ def render(engine=None):
             r1, r2 = st.columns(2)
             if r1.button("✓ Confirm reset", type="primary", key="reset_go"):
                 try:
-                    from modules.demo_reset import reset_demo_data
+                    from dataview.core.demo_reset import reset_demo_data
                     st.session_state["_reset_result"] = reset_demo_data(_demo_engine())
                 except Exception as e:
                     st.session_state["_reset_result"] = {"error": str(e)}

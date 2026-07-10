@@ -15,7 +15,7 @@ Shapefile layers:
   Read from dv_spatial_layer registry (GEOJSON or SHAPEFILE source_type)
 
 Called from app.py:
-    import page_well_map
+    from dataview.mapping import page_well_map
     page_well_map.run(engine)
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ except ImportError:
     pass
 
 try:
-    from modules.dv_spatial_loader import (
+    from dataview.mapping.dv_spatial_loader import (
         list_layers, get_layer_geojson,
         LAYER_CATEGORY_DISPLAY,
     )
@@ -1629,7 +1629,7 @@ def run(engine=None):
                          use_container_width=True,
                          disabled=not reg_path):
                 try:
-                    from modules.dv_spatial_loader import (
+                    from dataview.mapping.dv_spatial_loader import (
                         import_shapefile, register_shapefile, import_geojson)
                     from pathlib import Path as _P
                     p    = _P(reg_path)

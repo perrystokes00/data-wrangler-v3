@@ -73,7 +73,7 @@ def load_legend(path):
 
 def make_resolver(legend, classify_type, classify_status):
     """Returns resolve(source_list, raw_type, raw_status) -> (std_type, std_status)."""
-    from standardize_well_attrs import TYPE as TYPE_SET, STATUS as STATUS_SET
+    from dataview.reference_tables.standardize_well_attrs import TYPE as TYPE_SET, STATUS as STATUS_SET
 
     def legend_lookup(tokens, axis, raw):
         raw = _norm(raw)
@@ -372,7 +372,7 @@ def main():
     args = ap.parse_args()
 
     sys.path.insert(0, HERE)
-    from standardize_well_attrs import classify_type, classify_status
+    from dataview.reference_tables.standardize_well_attrs import classify_type, classify_status
     legend = load_legend(args.legend)
     resolve = make_resolver(legend, classify_type, classify_status)
     print(f"legend entries: {len(legend)}")

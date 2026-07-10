@@ -18,7 +18,7 @@ from pathlib import Path
 # Add v3 root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from dw_utils import make_engine, dedup
+from dataview.core.dw_utils import make_engine, dedup
 from translators.ks_kgs_well_header import read
 
 
@@ -100,7 +100,7 @@ def main() -> None:
 
     # ── Seed business associates and fields first ─────────────────────
     print("Seeding entities...")
-    from entity_seeder import seed_entities
+    from dataview.import_data.entity_seeder import seed_entities
     rows = seed_entities(rows, engine, source="KGS", loader_tag="KS_KGS_LOADER")
 
     inserted = skipped = errored = 0

@@ -38,7 +38,7 @@ DV_SCHEMA  = "dataview"
 # with what promote populates; fall back to a hard copy if the import fails.
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from build_catalog_mirror import MIRROR_TABLES as DV_TABLES
+    from dataview.file_catalog.build_catalog_mirror import MIRROR_TABLES as DV_TABLES
 except Exception:
     DV_TABLES = [
         "dv_well", "dv_well_formation_top",

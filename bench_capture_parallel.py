@@ -28,7 +28,7 @@ def _worker(arg):
     _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "modules"))
     try:
         from sqlalchemy import create_engine
-        import worker_core as wc
+        from dataview.file_catalog import worker_core as wc
         eng = create_engine(url, fast_executemany=True)
         try:
             res = wc.process_file(eng, rec)

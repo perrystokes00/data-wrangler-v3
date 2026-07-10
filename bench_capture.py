@@ -41,7 +41,7 @@ def main():
     if a.cleanup:
         cleanup(); return
 
-    import worker_core
+    from dataview.file_catalog import worker_core
     files = [str(p) for p in Path(a.src).rglob("*.las")][:a.n]
     if not files:
         print("no files"); return

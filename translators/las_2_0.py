@@ -24,7 +24,7 @@ from pathlib import Path
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from dw_utils import parse_date, clean, null_if_empty, uwi_from_api
+from dataview.core.dw_utils import parse_date, clean, null_if_empty, uwi_from_api
 
 SOURCE     = "LAS"
 LOADER_TAG = "LAS2_LOADER"
@@ -318,7 +318,7 @@ def load_well_headers(rows: list[dict], engine) -> tuple[int, int]:
     """
     import pandas as pd
     from sqlalchemy import text
-    from dw_utils import bulk_insert
+    from dataview.core.dw_utils import bulk_insert
 
     WELL_COLS = [
         "uwi", "well_name", "operator_name", "field_name",

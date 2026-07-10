@@ -6,7 +6,7 @@ def main():
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules"))
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from sqlalchemy import create_engine
-    from pipeline_run import run_pipeline
+    from dataview.import_data.pipeline_run import run_pipeline
 
     CONN = (r"DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost\SQLEXPRESS;"
             r"DATABASE=DataView_Demo;Trusted_Connection=yes;Encrypt=no")

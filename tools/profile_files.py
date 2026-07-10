@@ -7,7 +7,7 @@ already-queued files. Reports slowest files + per-extension averages.
   py profile_files.py --ext .pdf      # only PDFs
 """
 import argparse, time
-import worker_core as wc
+from dataview.file_catalog import worker_core as wc
 from sqlalchemy import text
 
 ap = argparse.ArgumentParser()

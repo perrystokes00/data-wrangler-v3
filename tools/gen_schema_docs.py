@@ -37,7 +37,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import schema_introspect as si
+from dataview.core import schema_introspect as si
 
 
 def _human(n: int) -> str:

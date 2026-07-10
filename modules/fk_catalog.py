@@ -122,7 +122,7 @@ class FKCatalog:
         if not constraints_raw and table_name.upper() not in self._data.get("table_pk", {}):
             return None
 
-        from modules.fk import FKConstraint, FKColumn, FKIntrospectResult
+        from dataview.core.fk import FKConstraint, FKColumn, FKIntrospectResult
         constraints = []
         parent_pks: dict[str, list[str]] = {}
         for c in constraints_raw:
@@ -171,7 +171,7 @@ def get_catalog(engine=None, dialect: str = "") -> FKCatalog:
     """
     if not dialect and engine is not None:
         try:
-            from modules.db import _detect_dialect
+            from dataview.core.db import _detect_dialect
             dialect = _detect_dialect(engine)
         except Exception:
             dialect = "sqlserver"

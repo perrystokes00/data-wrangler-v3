@@ -30,7 +30,7 @@ from sqlalchemy import text
 # V3 has dw_utils with make_engine — use the existing connection logic
 sys.path.insert(0, str(Path(__file__).parent))
 try:
-    from dw_utils import make_engine
+    from dataview.core.dw_utils import make_engine
 except ImportError:
     print("ERROR: Cannot import dw_utils.make_engine — run from V3 root.")
     sys.exit(1)
