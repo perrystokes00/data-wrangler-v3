@@ -8,7 +8,7 @@ Run from the repo root, AFTER committing the v4 refactor.
   py fix_imports.py --apply
 
 Only touches real import statements (anchored `from modules.X import` / `import modules.X`)
-and the dynamic string "modules.fk_catalog" / 'modules.fk_catalog'. Comments, docstrings,
+and the dynamic string "dataview.core.fk_catalog" / 'dataview.core.fk_catalog'. Comments, docstrings,
 and print()-strings that merely mention `modules.` are left alone. Every rewritten file is
 ast-validated; if a rewrite would break syntax it's skipped with a warning.
 """
@@ -72,7 +72,7 @@ def rewrite(src):
     for q in ('"', "'"):
         s, t = f'{q}modules.fk_catalog{q}', f'{q}dataview.core.fk_catalog{q}'
         if s in out: out = out.replace(s, t); hits.append("import_module modules.fk_catalog -> dataview.core.fk_catalog")
-    # worker_core fallback tuple: "modules.survey_loader"
+    # worker_core fallback tuple: "dataview.file_catalog.survey_loader"
     for q in ('"', "'"):
         s, t = f'{q}modules.survey_loader{q}', f'{q}dataview.file_catalog.survey_loader{q}'
         if s in out: out = out.replace(s, t); hits.append("fallback modules.survey_loader -> dataview.file_catalog.survey_loader")

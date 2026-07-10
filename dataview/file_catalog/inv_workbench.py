@@ -70,7 +70,7 @@ def mark_skipped(engine, dialect, inventory_id, group_file_id, reason):
 
 def _get_repos(engine):
     try:
-        from modules.las_catalog import list_repositories
+        from dataview.file_catalog.las_catalog import list_repositories
         repos = list_repositories(engine)
         if not repos.empty:
             return {"(none — assign later)": ""} | {
@@ -396,7 +396,7 @@ def _viewer_p190(file_path, ukey):
 def _fetch_well_names(engine) -> list[dict]:
     """Return [{uwi, well_name}] from PPDM WELL table."""
     try:
-        from modules.las_loader import fetch_ppdm_uwis
+        from dataview.file_catalog.las_loader import fetch_ppdm_uwis
         return fetch_ppdm_uwis(engine)
     except Exception:
         pass
@@ -430,7 +430,7 @@ def _fuzzy_match_well_name(candidate: str, wells: list[dict],
 
 def _cataloger_las(engine, dialect, inventory_id, file_path, group_file_id, ukey):
     try:
-        from modules.las_catalog import parse_las_header, catalog_file
+        from dataview.file_catalog.las_catalog import parse_las_header, catalog_file
     except ImportError as e:
         st.error(f"las_catalog not available: {e}"); return
 
@@ -525,7 +525,7 @@ def _cataloger_las(engine, dialect, inventory_id, file_path, group_file_id, ukey
         if st.button("🔎 Check PPDM", key=f"wb_chk_{ukey}"):
             if uwi.strip():
                 try:
-                    from modules.las_catalog import well_exists
+                    from dataview.file_catalog.las_catalog import well_exists
                     st.session_state[f"wb_ppdm_ok_{ukey}"] = (
                         well_exists(engine, uwi.strip()), uwi.strip()
                     )
@@ -650,7 +650,7 @@ def _run_dlis_well_match(engine, file_path: str, hdr: dict, ukey: str):
     # Fetch PPDM wells
     wells = []
     try:
-        from modules.las_loader import fetch_ppdm_uwis
+        from dataview.file_catalog.las_loader import fetch_ppdm_uwis
         wells = fetch_ppdm_uwis(engine)
     except Exception:
         pass

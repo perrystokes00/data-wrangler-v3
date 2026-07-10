@@ -702,7 +702,7 @@ def _do_pdf(engine, fpath, uwi, inv, say, dialect="mssql") -> FileResult:
         elif rt == RT_RFT and load_rft:
             r = load_rft(**kw)
         elif rt in (RT_PETRO, "PETROPHYSICAL"):
-            from modules.extract_petro import extract_petro, load_petro_zones
+            from dataview.file_catalog.extract_petro import extract_petro, load_petro_zones
             petro = extract_petro(fpath)
             if not petro.get("ok"):
                 res.status = "done" if detail.get("cat_well") else "skip"
@@ -811,7 +811,7 @@ def _load_directional(engine, dialect, well_info, rows, say):
     """
     rows = _remap_station_keys(rows)   # canonical MD/INC/AZI -> md/incl/azim columns
     # corrected path (prior-session fix): format-agnostic station loader
-    for _imp in ("survey_loader", "modules.survey_loader"):
+    for _imp in ("survey_loader", "dataview.file_catalog.survey_loader"):
         try:
             mod = __import__(_imp, fromlist=["load_directional_survey"])
             return mod.load_directional_survey(

@@ -122,7 +122,7 @@ _SEIS_STAGE_DDL = """
 
 def ensure_header_tables(engine) -> list[str]:
     """Create header storage tables if they don't exist. Returns list of created tables."""
-    from modules.setup_database import _adapt_ddl
+    from dataview.core.setup_database import _adapt_ddl
     d = detect_dialect(engine)
     created = []
     for ddl, name in [

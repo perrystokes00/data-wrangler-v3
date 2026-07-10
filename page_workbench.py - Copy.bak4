@@ -132,7 +132,7 @@ def run(engine=None, dialect: str = "mssql"):
                 st.code(traceback.format_exc())
     elif active == _TAB_LABELS[3]:
         try:
-            from dataview.file_catalog import page_vault
+            import page_vault
             page_vault.render(engine)
         except Exception as e:
             st.error(f"Vault unavailable: {e}")
@@ -572,7 +572,7 @@ def _run_scan(engine, dialect, root: str, exts: set):
     import csv, tempfile, hashlib
     from datetime import datetime, timezone
     from sqlalchemy import text as _t
-    from dataview.core.fingerprint import file_fingerprint, DEDUPE_SQL   # single source of truth
+    from fingerprint import file_fingerprint, DEDUPE_SQL   # single source of truth
 
     prog = st.progress(0.0, text="Walking...")
     found = []
@@ -1476,7 +1476,7 @@ def _norm_uwi(v):
     if v is None or str(v).strip() == "":
         return None
     try:
-        from dataview.core import path_identity as _pi
+        import path_identity as _pi
         u = _pi.norm_uwi14(str(v))
         if u:
             return u
@@ -1655,9 +1655,9 @@ def _tab_browse(engine, dialect):
                       "demote any CATALOGED with no rows behind it. Safe to re-run."):
         try:
             try:
-                from dataview.file_catalog.catalog_readiness import reconcile_readiness
+                from catalog_readiness import reconcile_readiness
             except Exception:
-                from dataview.file_catalog.catalog_readiness import reconcile_readiness
+                from modules.catalog_readiness import reconcile_readiness
             _res = reconcile_readiness(engine, "mssql", log=lambda *_: None)
             _n = _res.get("changed", 0)
             st.success(f"Reconciled readiness — {_n:,} file(s) updated.")
@@ -1797,7 +1797,7 @@ def _wb_nav(engine, dialect, df):
     # ── Universal viewer ──────────────────────────────────────────────────────
     if Path(fpath).exists():
         try:
-            from dataview.file_catalog.file_viewer import view as _view
+            from modules.file_viewer import view as _view
             _view(fpath, fext)
         except Exception as e:
             st.error(f"Viewer error: {e}")
@@ -1919,7 +1919,7 @@ def _do_extract(fpath: str, fext: str) -> tuple:
     """Extract structured data rows. Returns (rows, label)."""
     try:
         if fext == ".pdf":
-            from dataview.file_catalog.pdf_survey_catalog import (
+            from modules.pdf_survey_catalog import (
                 classify_pdf, extract_stations,
                 extract_eowr, extract_rft_data,
                 extract_well_test, extract_petrophysical,
@@ -1932,7 +1932,7 @@ def _do_extract(fpath: str, fext: str) -> tuple:
             # extract_core / RT_CORE are not present in all builds — guard them
             # so a missing symbol can't break the whole PDF preview path.
             try:
-                from dataview.file_catalog.pdf_survey_catalog import extract_core, RT_CORE
+                from modules.pdf_survey_catalog import extract_core, RT_CORE
             except ImportError:
                 extract_core, RT_CORE = None, "CORE_ANALYSIS"
             cl = classify_pdf(fpath)
@@ -1949,7 +1949,7 @@ def _do_extract(fpath: str, fext: str) -> tuple:
             elif rt == RT_WELL_TEST:
                 return extract_well_test(fpath).get("flow_rows",[]), "Flow periods"
             elif rt in (RT_PETRO,"PETROPHYSICAL"):
-                from dataview.file_catalog.extract_petro import extract_petro
+                from modules.extract_petro import extract_petro
                 r = extract_petro(fpath)
                 if r.get("ok"):
                     zones = r.get("zones", [])
@@ -1992,7 +1992,7 @@ def _do_extract(fpath: str, fext: str) -> tuple:
             return df.to_dict("records"), "Curve rows"
 
         elif fext in SEGY_EXTS:
-            from dataview.file_catalog.segy_header import sample_trace_rows
+            from segy_header import sample_trace_rows
             return sample_trace_rows(fpath, limit=100), "Trace headers"
 
         elif fext in SHP_EXTS:
@@ -2035,14 +2035,14 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
 
     try:
         if fext == ".pdf":
-            from dataview.file_catalog.pdf_survey_catalog import (
+            from modules.pdf_survey_catalog import (
                 classify_pdf, load_to_ppdm, RT_DIRECTIONAL, RT_SCOUT)
             # Newer symbols — tolerate an older deployed pdf_survey_catalog by
             # falling back to the known string values if the constants/function
             # aren't exported yet (prevents a partial deploy from breaking ALL
             # PDF cataloging on an ImportError).
             try:
-                from dataview.file_catalog.pdf_survey_catalog import (
+                from modules.pdf_survey_catalog import (
                     extended_classify_pdf, RT_EOWR as _RT_EOWR,
                     RT_WELL_TEST as _RT_WT, RT_DDR as _RT_DDR,
                     RT_RFT as _RT_RFT, RT_CASING as _RT_CAS)
@@ -2097,9 +2097,9 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
                     import uuid as _uuid
                     from datetime import datetime as _dt
                     try:
-                        from dataview.file_catalog.catalog_capture import capture as _cap
+                        from modules.catalog_capture import capture as _cap
                     except ImportError:
-                        from dataview.file_catalog.catalog_capture import capture as _cap
+                        from catalog_capture import capture as _cap
                     _now = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
                     _hn = _cap(engine, "cat_well", [{
                         "WELL_NAME":        cl.get("well_name") or uwi,
@@ -2128,7 +2128,7 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
                 r = load_to_ppdm(well_info=well_info, stations=rows,
                                  engine=engine, dialect=dialect)
             else:
-                from dataview.file_catalog.pdf_db_loader import (
+                from modules.pdf_db_loader import (
                     load_formation_tops, load_casing, load_scout, load_core,
                 )
                 # load_well_test / load_rft are newer; if a deployed
@@ -2136,11 +2136,11 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
                 # capture still marks the file cataloged) instead of breaking
                 # the entire PDF branch on an ImportError.
                 try:
-                    from dataview.file_catalog.pdf_db_loader import load_well_test
+                    from modules.pdf_db_loader import load_well_test
                 except ImportError:
                     load_well_test = None
                 try:
-                    from dataview.file_catalog.pdf_db_loader import load_rft
+                    from modules.pdf_db_loader import load_rft
                 except ImportError:
                     load_rft = None
                 # RT_EOWR/RT_WELL_TEST/RT_DDR/RT_RFT/RT_CASING are already in
@@ -2149,7 +2149,7 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
                 # constant in an older pdf_survey_catalog can't ImportError and
                 # kill the whole capture (this was the RT_CORE failure).
                 try:
-                    from dataview.file_catalog.pdf_survey_catalog import (
+                    from modules.pdf_survey_catalog import (
                         RT_FORMATION as _RT_FORM, RT_PETRO as _RT_PET,
                         RT_CORE as _RT_CORE, RT_SCOUT as _RT_SCOUT)
                     RT_FORMATION, RT_PETRO = _RT_FORM, _RT_PET
@@ -2172,7 +2172,7 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
                 elif rt == RT_RFT and load_rft:
                     r = load_rft(**kw)
                 elif rt in (RT_PETRO, "PETROPHYSICAL"):
-                    from dataview.file_catalog.extract_petro import (
+                    from modules.extract_petro import (
                         extract_petro, load_petro_zones)
                     petro = extract_petro(fpath)
                     if not petro.get("ok"):
@@ -2211,7 +2211,7 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
             # file_catalog.cat_well keyed by INVENTORY_ID — promote_catalog lifts
             # them into dataview.dv_well. (load_to_ppdm writes dbo.WELL directly
             # and bypasses the cat_* → dv_* pipeline, so it is NOT used here.)
-            from dataview.mapping.shapefile_catalog import (
+            from modules.shapefile_catalog import (
                 classify_shapefile, capture_wells_to_catalog,
                 capture_features_to_catalog, FT_WELL)
             cl = classify_shapefile(fpath)
@@ -2261,9 +2261,9 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
             # pre-extracted `rows` arg is unused. load_witsml stamps INVENTORY_ID
             # / SOURCE_PATH via capture(), and gates non-WITSML .xml itself.
             try:
-                from dataview.file_catalog.witsml_catalog import load_witsml as _witsml
+                from modules.witsml_catalog import load_witsml as _witsml
             except ImportError:
-                from dataview.file_catalog.witsml_catalog import load_witsml as _witsml
+                from witsml_catalog import load_witsml as _witsml
             _w = _witsml(engine, fpath, uwi=uwi,
                          inventory_id=well_info.get("inventory_id"),
                          source_path=fpath, well_info=well_info)
@@ -2282,9 +2282,9 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
             # markers, DST, SCAL, log curves), routing by the `kind` field.
             # Non-well kinds (Field/Reservoir/Seismic*) return a no_target note.
             try:
-                from dataview.file_catalog.json_well_log_catalog import load_json_well_log as _jwl
+                from modules.json_well_log_catalog import load_json_well_log as _jwl
             except ImportError:
-                from dataview.file_catalog.json_well_log_catalog import load_json_well_log as _jwl
+                from json_well_log_catalog import load_json_well_log as _jwl
             _j = _jwl(engine, fpath, uwi=uwi,
                       inventory_id=well_info.get("inventory_id"),
                       source_path=fpath, well_info=well_info)
@@ -2306,9 +2306,9 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
             # + hint, and each sub-loader stamps INVENTORY_ID/SOURCE_PATH via
             # capture() — same provenance the other branches carry.
             try:
-                from dataview.file_catalog.dv_office_loader import dispatch as _office
+                from modules.dv_office_loader import dispatch as _office
             except ImportError:
-                from dataview.file_catalog.dv_office_loader import dispatch as _office
+                from dv_office_loader import dispatch as _office
             _r = _office(engine, fpath, source="OFFICE")
             res["loaded"] = int(_r.get("loaded", 0) or 0)
             res["rt"] = "OFFICE"
@@ -2338,9 +2338,9 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
                 import lasio, uuid as _uuid
                 from datetime import datetime as _dt
                 try:
-                    from dataview.file_catalog.catalog_capture import capture as _cap
+                    from modules.catalog_capture import capture as _cap
                 except ImportError:
-                    from dataview.file_catalog.catalog_capture import capture as _cap
+                    from catalog_capture import capture as _cap
                 _now = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
                 inv = well_info.get("inventory_id")
                 las = lasio.read(fpath)
@@ -2799,7 +2799,7 @@ def _wb_resolve_unmatched(engine, df):
     back to MATCHED_UWI + the header so the file becomes loadable."""
     from sqlalchemy import text as _t
     try:
-        from dataview.core import path_identity as _pi
+        import path_identity as _pi
     except Exception:
         _pi = None
 
@@ -3723,6 +3723,13 @@ def _tab_pipeline(engine, dialect):
     # tucked behind expanders.
     _pipeline_run_hero(engine, dialect)
 
+    st.divider()
+    try:
+        import pipeline_batch_ui
+        pipeline_batch_ui.render(engine)
+    except Exception as _bpe:
+        st.caption(f"(batch panel unavailable: {_bpe})")
+
     with st.expander("ℹ️ About this pipeline", expanded=False):
         st.caption(
             "The system scans structured and unstructured documents on a shared "
@@ -3745,10 +3752,9 @@ def _pipeline_report(engine):
     scope it to the scan path and see at a glance how each file landed."""
     import pandas as pd
     from sqlalchemy import text as _t
-    with st.expander("📋 Stage scorecard — extract · capture · promote per file",
+    with st.expander("📋 Inventory report — what happened to each file",
                      expanded=False):
-        # Scope: default to THIS crawl (files scanned today), with an option to
-        # widen to a scan root or the whole catalog.
+        # Populate a dropdown of actual scan roots so there's nothing to guess.
         try:
             with engine.connect() as _c:
                 _roots = [r[0] for r in _c.execute(_t(
@@ -3758,113 +3764,91 @@ def _pipeline_report(engine):
                     "ORDER BY ROOT_PATH")).fetchall()]
         except Exception:
             _roots = []
-        sc1, sc2 = st.columns([3, 1])
+        rc1, rc2 = st.columns([3, 1])
         _ALL = "(whole catalog)"
-        scsel = sc1.selectbox(
-            "Scan root", [_ALL] + _roots, index=0, key="score_root_sel",
-            help="Limit to a scan root, or the whole catalog.")
-        this_crawl = sc2.checkbox(
-            "This crawl only", value=True, key="score_this_crawl",
-            help="Limit to files scanned today (the current crawl).")
-        if not st.button("Run scorecard", key="score_run",
+        rsel = rc1.selectbox(
+            "Limit to scan root", [_ALL] + _roots, index=0, key="rep_root_sel",
+            help="Pick the folder a scan ingested from, or the whole catalog. "
+                 "These are the ROOT_PATH values recorded at scan time.")
+        recent = rc2.checkbox(
+            "Scanned today", value=False, key="rep_recent",
+            help="Limit to files whose SCAN_DATE is today.")
+        if not st.button("Write report to reports folder", key="rep_run",
                          use_container_width=True):
             return
-
-        # detail tables: (cat_ staged, dv_ promoted, label). captured = rows in
-        # cat_ OR dv_ ; promoted = rows in dv_. dv_ tables carry INVENTORY_ID.
-        _DETAIL = [
-            ("cat_well", "dv_well", "header"),
-            ("cat_well_dir_srvy_sta", "dv_well_dir_srvy_sta", "survey"),
-            ("cat_well_formation_top", "dv_well_formation_top", "tops"),
-            ("cat_well_dst", "dv_well_dst", "welltest"),
-            ("cat_well_completion", "dv_well_completion", "completion"),
-            ("cat_prod_volume", "dv_prod_volume", "production"),
-            ("cat_well_petro_interp", "dv_well_petro_interp", "petro"),
-            ("cat_well_core", "dv_well_core", "core"),
-            ("cat_well_log", "dv_well_log", "log"),
-            ("cat_well_log_curve", "dv_well_log_curve", "curves"),
-        ]
         try:
             with engine.connect() as con:
+                has_seis = con.execute(_t(
+                    "SELECT OBJECT_ID('file_catalog.FILE_SEIS_HEADER')"
+                )).scalar() is not None
+                seis_join = ("LEFT JOIN file_catalog.FILE_SEIS_HEADER sh "
+                             "ON sh.INVENTORY_ID = g.INVENTORY_ID"
+                             if has_seis else "")
+                name_expr = ("COALESCE(wh.WELL_NAME, sh.SURVEY_NAME)"
+                             if has_seis else "wh.WELL_NAME")
                 where, params = ["1=1"], {}
-                if scsel and scsel != _ALL:
-                    where.append("g.ROOT_PATH = :root"); params["root"] = scsel
-                if this_crawl:
+                if rsel and rsel != _ALL:
+                    where.append("g.ROOT_PATH = :root")
+                    params["root"] = rsel
+                if recent:
                     where.append(
                         "CAST(g.SCAN_DATE AS date) = CAST(GETDATE() AS date)")
-                base = con.execute(_t(f"""
-                    SELECT g.FILE_NAME, g.INVENTORY_ID,
-                           NULLIF(LTRIM(RTRIM(g.MATCHED_UWI)),'') AS uwi,
-                           g.HEADER_EXTRACTED, wh.REPORT_TYPE
+                sql = f"""
+                    SELECT
+                      g.FILE_PATH                              AS path,
+                      g.FILE_NAME                              AS file_name,
+                      NULLIF(LTRIM(RTRIM(g.MATCHED_UWI)), '')  AS uwi,
+                      {name_expr}                              AS well_or_survey,
+                      CASE
+                        WHEN ISNULL(g.FLAG_DELETE,'N')='Y'
+                             THEN 'flagged delete'
+                        WHEN g.HEADER_EXTRACTED='E'
+                             THEN 'error: ' + LEFT(ISNULL(g.CATALOG_ISSUES,'extract error'),120)
+                        WHEN g.HEADER_EXTRACTED='S'
+                             THEN 'skipped (unsupported/empty)'
+                        WHEN g.CATALOG_READINESS='CATALOGED'
+                             THEN 'captured to cat_*'
+                        WHEN g.HEADER_EXTRACTED='Y'
+                             AND NULLIF(LTRIM(RTRIM(g.MATCHED_UWI)),'') IS NOT NULL
+                             THEN 'extracted - UWI matched'
+                        WHEN g.HEADER_EXTRACTED='Y'
+                             THEN 'extracted - no UWI'
+                        WHEN ISNULL(g.HEADER_EXTRACTED,'N') IN ('N','')
+                             THEN 'pending'
+                        ELSE ISNULL(g.CATALOG_READINESS,'-')
+                      END                                      AS action_taken,
+                      g.CATALOG_READINESS                      AS readiness,
+                      g.SCAN_DATE                              AS scanned
                     FROM file_catalog.GLOBAL_FILE_CATALOG g
                     LEFT JOIN file_catalog.FILE_WELL_HEADER wh
                            ON wh.INVENTORY_ID = g.INVENTORY_ID
+                    {seis_join}
                     WHERE {' AND '.join(where)}
-                    ORDER BY g.FILE_NAME
-                """), params).fetchall()
-
-                def _cnt(tbl, inv):
-                    try:
-                        return con.execute(_t(
-                            f"SELECT COUNT(*) FROM {tbl} WHERE INVENTORY_ID=:i"),
-                            {"i": inv}).scalar() or 0
-                    except Exception:
-                        return 0
-
-                rows = []
-                for fn, inv, uwi, hx, rtype in base:
-                    extracted = ("Y" if hx == "Y" else
-                                 "ERR" if hx == "E" else
-                                 "skip" if hx == "S" else "N")
-                    cap = prom = 0; detail = []
-                    for cat, dv, label in _DETAIL:
-                        n_dv = _cnt("dataview." + dv, inv)
-                        n_ct = _cnt("file_catalog." + cat, inv)
-                        if n_dv:
-                            prom += n_dv; cap += n_dv; detail.append(f"{label}:{n_dv}")
-                        elif n_ct:
-                            cap += n_ct; detail.append(f"{label}:{n_ct}(staged)")
-                    rows.append({
-                        "file": fn,
-                        "type": rtype or "?",
-                        "extract": extracted,
-                        "capture": "Y" if cap else "N",
-                        "promote": "Y" if prom else "N",
-                        "uwi": uwi or "",
-                        "detail": " ".join(detail) if detail else "no detail rows",
-                    })
-                df = pd.DataFrame(rows)
+                    ORDER BY g.SCAN_DATE DESC, g.FILE_NAME
+                """
+                res = con.execute(_t(sql), params)
+                df = pd.DataFrame(res.fetchall(), columns=list(res.keys()))
         except Exception as e:
-            st.error(f"Scorecard failed: {type(e).__name__}: {e}")
+            st.error(f"Report failed: {type(e).__name__}: {e}")
             return
 
         if df.empty:
-            st.info("No files in scope. Run a crawl, or widen the scope.")
+            st.info("No files match.")
             return
-
-        n_ext = int((df["extract"] == "Y").sum())
-        n_cap = int((df["capture"] == "Y").sum())
-        n_prom = int((df["promote"] == "Y").sum())
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Files", len(df))
-        m2.metric("Extracted", n_ext)
-        m3.metric("Captured", n_cap)
-        m4.metric("Promoted", n_prom)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        st.caption("captured=Y means data reached cat_* or dv_*; promoted=Y means it "
-                   "reached dv_*. A promoted file shows captured=Y even though cat_* is "
-                   "drained by promote — that's expected.")
-
         import time as _tm
         _rdir = st.session_state.get("fp_report", r"C:\Bulk\reports")
         try:
             os.makedirs(_rdir, exist_ok=True)
             _ts = _tm.strftime("%Y%m%d_%H%M%S")
-            _path = os.path.join(_rdir, f"stage_scorecard_{_ts}.csv")
+            _path = os.path.join(_rdir, f"inventory_report_{_ts}.csv")
             df.to_csv(_path, index=False)
-            st.success(f"Scorecard written to `{_path}`")
         except Exception as e:
-            st.warning(f"Shown above; CSV write failed: {type(e).__name__}: {e}")
+            st.error(f"Couldn't write report to {_rdir}: "
+                     f"{type(e).__name__}: {e}")
+            return
+        tally = df["action_taken"].value_counts()
+        st.success(f"Report written to `{_path}`  ·  {len(df):,} file(s)")
+        st.caption("  ·  ".join(f"{k}: {v:,}" for k, v in tally.items()))
 
 
 _PIPE_STAGES = ["scan", "extract", "enrich", "triage",
@@ -4098,12 +4082,12 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
             tcol, ccol = st.columns([1.5, 4])
             fp_workers = tcol.number_input(
                 "Parse workers", min_value=1, max_value=64,
-                value=int(st.session_state.get("fp_workers", 6)),
+                value=int(st.session_state.get("fp_workers", min(12, os.cpu_count() or 8))),
                 step=1, key="fp_workers",
                 help="Parallel parse workers for the extract stage.")
             fp_multicore = ccol.checkbox(
                 "⚡ Use all CPU cores (multi-core parse)",
-                value=bool(st.session_state.get("fp_multicore", True)),  # default: multi-core ON
+                value=bool(st.session_state.get("fp_multicore", False)),
                 key="fp_multicore",
                 help="ON: run the pipeline in a detached process so the extract "
                      "stage uses a true process pool across every core — same speed "
@@ -4157,7 +4141,7 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
         # only rebuilds on Connect, not on selectbox change) can't silently send
         # a run to the wrong database.
         try:
-            from dataview.import_data import pipeline_run as _plc
+            import pipeline_run as _plc
             _tgt = (st.session_state.get("dw_conn_spec")
                     or _plc._engine_spec(engine))
             _tdb, _tsrv = _tgt.get("database") or "?", _tgt.get("server") or "?"
@@ -4174,7 +4158,7 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
         # Guard against re-entry: don't start a second run if one is already
         # going (e.g. a stray rerun while running).
         if run_clicked and not st.session_state.get("fp_running"):
-            from dataview.import_data import pipeline_run as _pl
+            import pipeline_run as _pl
             _ev = threading.Event()
             _log_buf, _result = [], {}
             _stopfile = None
@@ -4217,41 +4201,53 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
                     "do_promote": bool(fp_promote),
                     "promote_apply": bool(fp_apply and fp_promote),
                     "do_deep": False,
-                    "parse_mode": "process" if fp_multicore else "thread",
                     "batch_size": int(fp_batch_size) if fp_batch else None,
                     "stall_timeout": _STALL_TIMEOUT,
                     "ref": REF,
                     "state_out": _statep,
                     "stop_file": _stopfile,
                 }
-                _logfile = os.path.join(_tmpd, "console.log")
-                _cfg["console_log"] = _logfile
                 with open(_cfgp, "w", encoding="utf-8") as _f:
                     _json.dump(_cfg, _f)
 
-                # DETACHED launch (page_run.py model): child writes stdout to a LOG
-                # FILE; no pipe, no daemon reader thread, no rerun-held handles. The
-                # poll loop reads the file. This is what stops orphan/respawn trees.
-                if not os.path.exists(_runner):
-                    _result["ok"] = False
-                    _result["err"] = ("pipeline_proc_runner.py not deployed "
-                                      "next to pipeline_run.py")
-                    _result["done"] = True
-                    _th = None
-                else:
-                    _env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
-                    _CREATE_NO_WINDOW = 0x08000000
-                    _fh = open(_logfile, "w", encoding="utf-8")
-                    _proc = subprocess.Popen(
-                        [_sys.executable, "-u", _runner, _cfgp],
-                        stdout=_fh, stderr=subprocess.STDOUT,
-                        cwd=os.path.dirname(_runner) or None, env=_env,
-                        creationflags=_CREATE_NO_WINDOW)
-                    _result["proc"] = _proc
-                    st.session_state["fp_logfile"] = _logfile
-                    st.session_state["fp_proc"] = _proc
-                    st.session_state["fp_statep"] = _statep
-                    _th = None      # no reader thread — the poll loop reads the file
+                def _proc_worker(_runner=_runner, _cfgp=_cfgp, _statep=_statep,
+                                 _buf=_log_buf, _res=_result):
+                    try:
+                        if not os.path.exists(_runner):
+                            _res["ok"] = False
+                            _res["err"] = ("pipeline_proc_runner.py not deployed "
+                                           "next to pipeline_run.py")
+                            _res["done"] = True
+                            return
+                        _env = dict(os.environ)
+                        _env["PYTHONIOENCODING"] = "utf-8"
+                        proc = subprocess.Popen(
+                            [_sys.executable, "-u", _runner, _cfgp],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace",
+                            bufsize=1, env=_env,
+                            cwd=os.path.dirname(_runner) or None)
+                        _res["proc"] = proc
+                        for _line in iter(proc.stdout.readline, ""):
+                            _buf.append(_line.rstrip("\n"))
+                        proc.stdout.close()
+                        _rc = proc.wait()
+                        _st = {}
+                        try:
+                            with open(_statep, "r", encoding="utf-8") as _sf:
+                                _st = _json.load(_sf)
+                        except Exception:
+                            pass
+                        _res["state"] = _st
+                        _res["ok"] = (_rc == 0)
+                        if _rc != 0 and "err" not in _res:
+                            _res["err"] = f"runner exit {_rc}"
+                    except Exception as e:
+                        _res["ok"] = False
+                        _res["err"] = f"{type(e).__name__}: {e}"
+                    _res["done"] = True
+
+                _th = threading.Thread(target=_proc_worker, daemon=True)
             else:
                 # In-app thread path (safe default): parsing stays GIL-bound to
                 # one core, but no subprocess. The worker touches no Streamlit
@@ -4272,7 +4268,6 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
                             do_promote=_prom, promote_apply=_apply and _prom,
                             per_type_cap=None, stall_timeout=_STALL_TIMEOUT,
                             should_abort=_ev.is_set, ref=REF,
-                            parse_mode=("process" if fp_multicore else "thread"),
                             report_root=_report, log=_log_buf.append)
                         if _batch:
                             _state = _pl.run_pipeline_batched(
@@ -4299,15 +4294,10 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
             st.session_state["fp_result"]    = _result
             st.session_state["fp_thread"]    = _th
             st.session_state["fp_running"]   = True
-            # per-run scorecard anchor: mark when THIS run began (UTC), so the
-            # current-run scorecard can scope to files scanned since now.
-            from datetime import datetime as _dtu, timezone as _tzu
-            st.session_state["fp_run_started"] = _dtu.now(_tzu.utc).strftime("%Y-%m-%d %H:%M:%S")
             st.session_state["fp_apply_run"] = fp_apply
             st.session_state["fp_vault_run"] = fp_vault.strip()
             st.session_state["fp_report_run"] = fp_report.strip() or r"C:\Bulk\reports"
-            if _th is not None:          # detached run has no thread to start
-                _th.start()
+            _th.start()
             # NB: no st.rerun() here. Calling it in the same script run as the
             # form submission can re-deliver the submit, re-enter this handler,
             # and spawn a restart loop ("uncontrolled reruns"). The poll loop at
@@ -4332,49 +4322,19 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
         # Live log + completion handling. While the worker runs, poll a few times
         # a second so the log streams and the Stop click can land.
         if st.session_state.get("fp_running"):
-            # fp_logfile poll: detached multi-core run writes to a log file — read it
-            # fresh each cycle so the log/scorecard update without a reader thread.
-            _lf = st.session_state.get("fp_logfile")
-            if _lf:
-                try:
-                    with open(_lf, "r", encoding="utf-8", errors="replace") as _lfh:
-                        st.session_state["fp_log"] = _lfh.read().splitlines()
-                except Exception:
-                    pass
-                _pr = st.session_state.get("fp_proc")
-                if _pr is not None and _pr.poll() is not None:
-                    # process exited — load state file, mark done
-                    _res2 = st.session_state.get("fp_result", {})
-                    import json as _json2
-                    try:
-                        with open(st.session_state.get("fp_statep",""), "r",
-                                  encoding="utf-8") as _sf2:
-                            _res2["state"] = _json2.load(_sf2)
-                    except Exception:
-                        pass
-                    _res2["ok"] = (_pr.returncode == 0)
-                    if _pr.returncode != 0 and "err" not in _res2:
-                        _res2["err"] = f"runner exit {_pr.returncode}"
-                    _res2["done"] = True
-                    st.session_state["fp_result"] = _res2
             _log = st.session_state.get("fp_log", [])
             _exp = _expected_stages(fp_inventory, fp_capture, fp_vaulton,
                                     fp_promote)
             _frac, _cur, _marks = _pipeline_progress(_log, _exp)
             _res = st.session_state.get("fp_result", {})
             _th = st.session_state.get("fp_thread")
-            _proc_live = st.session_state.get("fp_proc")
-            _done = bool(_res.get("done")
-                         or (_th is not None and not _th.is_alive())
-                         or (_proc_live is not None and _proc_live.poll() is not None))
+            _done = bool(_res.get("done") or (_th is not None and not _th.is_alive()))
             st.progress(1.0 if _done else _frac,
                         text=(f"▶ {(_cur or 'starting').upper()} · "
                               f"{int((1.0 if _done else _frac) * 100)}%"))
             st.caption("   ".join(_marks))
             if _done:
                 st.session_state["fp_running"] = False
-                for _k in ("fp_logfile", "fp_proc", "fp_statep"):
-                    st.session_state.pop(_k, None)
                 st.session_state["fp_stage_times"] = \
                     (_res.get("state") or {}).get("stage_times") or {}
                 try:
@@ -4409,14 +4369,6 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
                         st.success(
                             f"Pipeline finished ({'APPLY' if _ap else 'dry-run'}). "
                             f"All reports saved under {_rr}.")
-                        # accurate 'what actually promoted' report (reads dv_* directly,
-                        # unlike the per-file 'promoted' flag which only covers seismic)
-                        if _ap:
-                            try:
-                                from modules.promote_report_ui import render as _render_promote_report
-                                _render_promote_report(engine, st)
-                            except Exception as _rx:
-                                st.caption(f"(report unavailable: {str(_rx)[:100]})")
                     _paths = st.session_state.get("fp_report_paths")
                     if _paths:
                         st.caption(f"Reports in `{_rr}`  ·  "
@@ -4442,12 +4394,6 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
 
         _render_stage_timing()
         _render_scorecard(engine)        # rendered every cycle, including mid-run
-        # per-run scorecard: what THIS run just did (cumulative table is all crawls)
-        try:
-            from dataview.file_catalog.current_run_scorecard import render as _render_run_scorecard
-            _render_run_scorecard(engine, st, since=st.session_state.get("fp_run_started"))
-        except Exception as _rsx:
-            st.caption(f"(per-run scorecard unavailable: {str(_rsx)[:100]})")
 
         # keep polling AFTER the scorecard renders, so each cycle shows fresh numbers
         if st.session_state.get("fp_running"):
@@ -4510,7 +4456,7 @@ def _inventory_scorecard(engine):
         except Exception:
             _seis_ok = False
         if _seis_ok:
-            _seis_cte = ("seis_done AS ("
+            _cte = ("WITH seis_done AS ("
                     "SELECT DISTINCT sh.INVENTORY_ID "
                     "FROM file_catalog.FILE_SEIS_HEADER sh WITH (NOLOCK) "
                     "JOIN dataview.dv_seis_set ss "
@@ -4518,62 +4464,16 @@ def _inventory_scorecard(engine):
             _join = "LEFT JOIN seis_done sd ON sd.INVENTORY_ID = g.INVENTORY_ID "
             _seis = "OR sd.INVENTORY_ID IS NOT NULL "
         else:
-            _seis_cte = _join = _seis = ""
-
-        # ── document promotion credit ────────────────────────────────────────
-        # A .pdf/.xlsx/.csv/.docx is 'promoted' once its deep data (tops, dir
-        # survey, production, completion, log curves) lands in dv_* — tracked by
-        # the INVENTORY_ID lineage promote copies into each dv_ detail table.
-        # Build a UNION over whichever dv_ document tables exist + carry
-        # INVENTORY_ID, then credit any GFC row whose INVENTORY_ID appears there.
-        _doc_tables = ("dv_well_formation_top", "dv_well_dir_srvy_hdr",
-                       "dv_well_dir_srvy_sta", "dv_well_completion",
-                       "dv_prod_volume", "dv_prod_entity", "dv_well_log",
-                       "dv_well_log_curve", "dv_well_core", "dv_well_dst")
-        _parts = []
-        for _dt in _doc_tables:
-            try:
-                _has = con.execute(_t(
-                    "SELECT CASE WHEN OBJECT_ID(:o) IS NOT NULL AND EXISTS("
-                    "SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID(:o) "
-                    "AND name='INVENTORY_ID') THEN 1 ELSE 0 END"),
-                    {"o": f"dataview.{_dt}"}).scalar() == 1
-            except Exception:
-                _has = False
-            if _has:
-                _parts.append(f"SELECT INVENTORY_ID FROM dataview.{_dt} WITH (NOLOCK) "
-                              f"WHERE INVENTORY_ID IS NOT NULL")
-        if _parts:
-            _docs_cte = ("docs_done AS (SELECT DISTINCT INVENTORY_ID FROM ("
-                         + " UNION ALL ".join(_parts) + ") _u) ")
-            _djoin = "LEFT JOIN docs_done dd ON dd.INVENTORY_ID = g.INVENTORY_ID "
-            _dprom = "OR dd.INVENTORY_ID IS NOT NULL "
-        else:
-            _docs_cte = _djoin = _dprom = ""
-
-        # assemble the combined WITH clause from whichever CTEs are present
-        _ctes = [c for c in (_seis_cte, _docs_cte) if c]
-        _cte = ("WITH " + ", ".join(_ctes) + " ") if _ctes else ""
-        _join = _join + _djoin
+            _cte = _join = _seis = ""
         sql = _t(f"""
             {_cte}SELECT
                 ISNULL(NULLIF(g.FILE_EXT,''),'(none)')                           AS [type],
                 COUNT(*)                                                          AS inventoried,
                 SUM(CASE WHEN g.HEADER_EXTRACTED='Y' THEN 1 ELSE 0 END)           AS extracted,
-                -- captured (durable): count files that WENT THROUGH capture via the
-                -- CAPTURED_HASH stamp (survives promote, unlike the cat_* staging rows
-                -- or the CATALOG_READINESS flag that LAS never gets set to CATALOGED).
-                SUM(CASE WHEN g.CAPTURED_HASH IS NOT NULL
-                         OR g.CATALOG_READINESS='CATALOGED'
-                         OR g.PROMOTED_AT IS NOT NULL {_seis}THEN 1 ELSE 0 END)   AS cataloged,
+                SUM(CASE WHEN g.CATALOG_READINESS='CATALOGED' {_seis}THEN 1 ELSE 0 END) AS cataloged,
                 SUM(CASE WHEN g.VAULTED_AT  IS NOT NULL THEN 1 ELSE 0 END)        AS vaulted,
-                SUM(CASE WHEN g.PROMOTED_AT IS NOT NULL {_seis}{_dprom}THEN 1 ELSE 0 END) AS promoted,
-                -- pending: NOT extracted AND NOT captured (a captured-then-promoted
-                -- file is done, not pending — key off CAPTURED_HASH so the drain of
-                -- cat_* on promote doesn't resurrect it as 'pending').
-                SUM(CASE WHEN (g.HEADER_EXTRACTED IS NULL OR g.HEADER_EXTRACTED IN ('N',''))
-                          AND g.CAPTURED_HASH IS NULL
-                          AND g.PROMOTED_AT IS NULL
+                SUM(CASE WHEN g.PROMOTED_AT IS NOT NULL {_seis}THEN 1 ELSE 0 END) AS promoted,
+                SUM(CASE WHEN g.HEADER_EXTRACTED IS NULL OR g.HEADER_EXTRACTED IN ('N','')
                          THEN 1 ELSE 0 END)                                       AS pending,
                 SUM(CASE WHEN g.HEADER_EXTRACTED='S' THEN 1 ELSE 0 END)           AS skipped
             FROM file_catalog.GLOBAL_FILE_CATALOG g WITH (NOLOCK)
@@ -4665,7 +4565,7 @@ def _pipeline_stages(engine, dialect):
                  "missing them. Slow (full WELL_MASTER scan) — off by default.")
         if c2.button("Run enrichment", type="primary", key="pl_en_run",
                      use_container_width=True):
-            from dataview.file_catalog import enrich_file_headers as _en
+            import enrich_file_headers as _en
             a = _types.SimpleNamespace(
                 server=_host, database=_db, odbc_driver="",
                 ref=REF, depth_tol=50.0,
@@ -4721,7 +4621,7 @@ def _pipeline_stages(engine, dialect):
         if v4.button("Run vault copy", type="primary", key="pl_v_run",
                      use_container_width=True):
             import os as _os
-            from dataview.file_catalog import vault_organizer as _vo
+            import vault_organizer as _vo
             from collections import Counter as _Counter
             try:
                 with engine.connect() as _con:
@@ -4770,7 +4670,7 @@ def _pipeline_stages(engine, dialect):
         d_dry = d3.checkbox("Dry run", value=True, key="pl_d_dry")
         if d4.button("Run collect", type="primary", key="pl_d_run",
                      use_container_width=True):
-            from dataview.file_catalog import collect_final_documents as _cf
+            import collect_final_documents as _cf
             a = _types.SimpleNamespace(
                 server=_host, database=_db, odbc_driver="",
                 vault=d_vault, dest=None, word=d_word, types=None,
@@ -4884,7 +4784,7 @@ def _pipeline_stages(engine, dialect):
                                   key="pl_sc_month", placeholder="2026-06")
         if sc2.button("Generate scorecard", type="primary", key="pl_sc_run",
                       use_container_width=True):
-            from dataview.file_catalog import catalog_scorecard as _sc
+            import catalog_scorecard as _sc
             raw = engine.raw_connection()
             data, err = None, None
             try:
@@ -4930,7 +4830,7 @@ def _pipeline_stages(engine, dialect):
                "resolve the REVIEW and LOW worklists. It loads only when you "
                "open it, so it never scans the reference on its own.")
     if st.toggle("Open Triage & Review", key="pl_triage_open"):
-        from dataview.file_catalog import page_triage as _ptri
+        import page_triage as _ptri
         _ptri.render(engine, dialect)
 
     # ── ⑧ Promote to Database ───────────────────────────────────────────────
@@ -4947,7 +4847,7 @@ def _pipeline_stages(engine, dialect):
         p_dry = p2.checkbox("Dry run", value=True, key="pl_pr_dry")
         if st.button("Run promote", type="primary", key="pl_pr_run",
                      use_container_width=True):
-            from dataview.file_catalog import promote_catalog as _pc
+            import promote_catalog as _pc
             apply = not p_dry
             raw = engine.raw_connection()
             lines, err = [], None
@@ -4977,17 +4877,6 @@ def _pipeline_stages(engine, dialect):
             if not err and apply:
                 st.success("Promote complete — rows moved into dv_* and cleared "
                            "from the cat_* mirrors.")
-
-        # ── reference FK review — resolve rows promote HELD on unseeded codes ──
-        # Rows whose source/uom/etc. code isn't in its dv_r_* reference are parked
-        # (not crashed). This grid surfaces those held codes so you can Add them as
-        # new vocabulary or Map them to an existing code, then re-run promote.
-        st.divider()
-        try:
-            from dataview.file_catalog.promote_fk_review import render as _render_promote_fk
-            _render_promote_fk(engine, st)
-        except Exception as _fkx:
-            st.caption(f"(FK review unavailable: {str(_fkx)[:100]})")
 
     # ── ⑨ Clear / Reset ─────────────────────────────────────────────────────
     with st.expander(
@@ -5123,29 +5012,15 @@ def _pipeline_clear(engine, dialect):
             cur.execute(_cc._SET_OPTS)          # required for dv_well spatial DML
             rows = _cc.gather(cur, do_dv=True, keep=set())
             _cc.clear(cur, rows, _log)
-            # reset capture stamps on clear: clearing cat_*/dv_* leaves CAPTURED_HASH
-            # stamped, which makes the next crawl's capture skip these files as
-            # "already captured" so they never re-capture. Null the stamps so a
-            # cleared catalog truly re-processes every file.
-            try:
-                _rc = cur.execute(
-                    "UPDATE file_catalog.GLOBAL_FILE_CATALOG "
-                    "SET CAPTURED_HASH = NULL, VAULTED_AT = NULL, PROMOTED_AT = NULL "
-                    "WHERE CAPTURED_HASH IS NOT NULL OR VAULTED_AT IS NOT NULL "
-                    "OR PROMOTED_AT IS NOT NULL").rowcount
-                _log(f"reset capture/vault/promote stamps on {_rc or 0} catalog row(s)")
-            except Exception as _se:
-                _log(f"(stamp reset skipped: {str(_se)[:80]})")
             raw.commit(); raw.close()
-            st.success("Catalog and catalog-derived dv_* rows cleared "
-                       "(capture stamps reset — files will re-capture on next run).")
+            st.success("Catalog and catalog-derived dv_* rows cleared.")
         except Exception as e:
             st.error(f"Clear failed: {type(e).__name__}: {e}")
 
 
 def _well_key_grid(engine):
     from sqlalchemy import text as _t
-    from dataview.core import path_identity as _pi
+    import path_identity as _pi
 
     with engine.connect() as con:
         has = con.execute(_t(
@@ -5344,7 +5219,7 @@ def _well_key_grid(engine):
 
 def _seis_survey_grid(engine):
     from sqlalchemy import text as _t
-    from dataview.core import path_identity as _pi
+    import path_identity as _pi
 
     with engine.connect() as con:
         rows = con.execute(_t("""

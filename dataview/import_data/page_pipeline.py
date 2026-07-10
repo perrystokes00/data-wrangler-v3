@@ -1673,7 +1673,7 @@ def render(S):
                             try:
                                 import importlib as _il_fk
                                 _cat = _il_fk.import_module(
-                                    "modules.fk_catalog").get_catalog(S.engine)
+                                    "dataview.core.fk_catalog").get_catalog(S.engine)
                                 if getattr(_cat, "available", False):
                                     _src_label = "FK catalog (cached)"
                             except Exception:

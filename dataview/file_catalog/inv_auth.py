@@ -26,7 +26,7 @@ def login(user: dict, engine=None):
     st.session_state["inv_user_email"] = user["email"]
     st.session_state["inv_user_role"]  = user["role"]
     try:
-        from modules.audit_log import audit_login
+        from dataview.file_catalog.audit_log import audit_login
         audit_login(engine, user)
     except Exception:
         pass
@@ -35,7 +35,7 @@ def login(user: dict, engine=None):
 def logout(engine=None):
     try:
         if engine:
-            from modules.audit_log import audit_logout
+            from dataview.file_catalog.audit_log import audit_logout
             audit_logout(engine, current_user())
     except Exception:
         pass

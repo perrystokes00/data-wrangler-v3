@@ -50,7 +50,7 @@ except Exception as _ie:
 
 # ── Optional: LAS/DLIS/LIS inspection ────────────────────────────────
 try:
-    from modules.las_catalog import parse_las_header, get_file_curves
+    from dataview.file_catalog.las_catalog import parse_las_header, get_file_curves
     HAS_LAS = True
 except Exception:
     HAS_LAS = False

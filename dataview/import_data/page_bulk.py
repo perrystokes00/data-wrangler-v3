@@ -779,7 +779,7 @@ def run_job(job: dict, engine, ppdm_schema, progress_cb=None, cancel_flag=None) 
                 _s5c_cat_ok = False
                 try:
                     import importlib as _s5c_il
-                    _s5c_fkc = _s5c_il.import_module("modules.fk_catalog").get_catalog(engine)
+                    _s5c_fkc = _s5c_il.import_module("dataview.core.fk_catalog").get_catalog(engine)
                     if _s5c_fkc.available:
                         for _con in _s5c_fkc.get_fk_constraints(target_table.upper()):
                             _fkpt = _con["parent_table"].upper()

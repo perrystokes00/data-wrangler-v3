@@ -19,7 +19,7 @@ import pandas as pd
 import streamlit as st
 
 try:
-    from modules.las_loader import (
+    from dataview.file_catalog.las_loader import (
         extract_las_uwi,
         fetch_ppdm_uwis,
         fuzzy_match_uwi,

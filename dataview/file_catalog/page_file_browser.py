@@ -796,7 +796,7 @@ def _render_well_search(engine):
                     res = {"File": fn, "Status": ""}
                     try:
                         if fmt == "LAS":
-                            from modules.las_catalog import catalog_file as _cf
+                            from dataview.file_catalog.las_catalog import catalog_file as _cf
                             r = _cf(engine, fp, repo_id, uwi=uwi)
                         elif fmt == "DLIS":
                             from dataview.file_catalog.dlis_catalog import catalog_dlis_file as _cf

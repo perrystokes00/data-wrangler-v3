@@ -1949,7 +1949,7 @@ def _do_extract(fpath: str, fext: str) -> tuple:
             elif rt == RT_WELL_TEST:
                 return extract_well_test(fpath).get("flow_rows",[]), "Flow periods"
             elif rt in (RT_PETRO,"PETROPHYSICAL"):
-                from modules.extract_petro import extract_petro
+                from dataview.file_catalog.extract_petro import extract_petro
                 r = extract_petro(fpath)
                 if r.get("ok"):
                     zones = r.get("zones", [])
@@ -2172,7 +2172,7 @@ def _load_rows_to_catalog(engine, dialect, fpath, fext, uwi, rows):
                 elif rt == RT_RFT and load_rft:
                     r = load_rft(**kw)
                 elif rt in (RT_PETRO, "PETROPHYSICAL"):
-                    from modules.extract_petro import (
+                    from dataview.file_catalog.extract_petro import (
                         extract_petro, load_petro_zones)
                     petro = extract_petro(fpath)
                     if not petro.get("ok"):

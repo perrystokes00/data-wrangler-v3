@@ -176,7 +176,7 @@ def introspect_fk_constraints(
     # Wrapped in broad except — catalog module may not be installed yet
     try:
         import importlib as _il
-        _fkc_mod = _il.import_module("modules.fk_catalog")
+        _fkc_mod = _il.import_module("dataview.core.fk_catalog")
         _cat_result = _fkc_mod.get_catalog(engine).introspect(table_name, schema)
         if _cat_result is not None:
             return _cat_result
@@ -338,7 +338,7 @@ def get_parent_col_defs(engine, parent_schema, parent_table) -> list[ParentColDe
     # ── Catalog fast path ────────────────────────────────────────
     try:
         import importlib as _il
-        _fkc = _il.import_module("modules.fk_catalog").get_catalog(engine)
+        _fkc = _il.import_module("dataview.core.fk_catalog").get_catalog(engine)
         if _fkc.available:
             _meta = _fkc.get_col_meta(parent_table)
             if _meta:

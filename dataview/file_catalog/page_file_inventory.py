@@ -53,7 +53,7 @@ from dataview.file_catalog.file_inventory_governance import (
     list_users, set_user_active, reset_password,
     _table, _new_id, _now_expr,
 )
-from modules.audit_log import (
+from dataview.file_catalog.audit_log import (
     audit_assign, audit_reassign, audit_remove_assign,
     audit_catalog, audit_skip, audit_crawl, audit_clear,
     audit_password_reset, audit_password_change,
@@ -214,7 +214,7 @@ def render(engine, dialect: str):
             pass
         # Pre-create audit table
         try:
-            from modules.audit_log import ensure_audit_table
+            from dataview.file_catalog.audit_log import ensure_audit_table
             ensure_audit_table(engine)
         except Exception:
             pass
@@ -823,7 +823,7 @@ def _catalog_file_auto(engine, dialect, row, repo_id: str, user: dict):
     gfid = row["group_file_id"]
 
     if ext == "las":
-        from modules.las_catalog import catalog_file
+        from dataview.file_catalog.las_catalog import catalog_file
         r = catalog_file(engine, fp, repo_id)
     elif ext in ("dlis","dlf"):
         from dataview.file_catalog.dlis_catalog import catalog_dlis_file
@@ -847,7 +847,7 @@ def _catalog_file_auto(engine, dialect, row, repo_id: str, user: dict):
     if r.get("ok"):
         mark_cataloged(engine, dialect, iid, gfid)
         try:
-            from modules.audit_log import audit_catalog
+            from dataview.file_catalog.audit_log import audit_catalog
             audit_catalog(engine, user, row["file_name"],
                           ext.upper(), action=r.get("action",""))
         except Exception:
@@ -3048,7 +3048,7 @@ def _tab_audit_log(engine, dialect, user):
     """Audit log viewer — Manager/Delegate only. Last 30 days by default."""
     import pandas as pd
     from sqlalchemy import text
-    from modules.audit_log import ensure_audit_table, get_recent
+    from dataview.file_catalog.audit_log import ensure_audit_table, get_recent
 
     st.markdown("#### 📜 Audit Log")
     st.caption("Complete record of all application events — last 30 days. Append-only.")
