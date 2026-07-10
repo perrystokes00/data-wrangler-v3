@@ -481,6 +481,8 @@ def export_well_headers(engine, fmt_filter="All",
         aggfunc="first"
     ).reset_index()
     pivot.columns.name = None
+    for c in pivot.columns:
+        pivot[c] = pivot[c].astype("string")
     return pivot
 
 
@@ -519,4 +521,6 @@ def export_seis_headers(engine, fmt_filter="All") -> "pd.DataFrame":
         aggfunc="first"
     ).reset_index()
     pivot.columns.name = None
+    for c in pivot.columns:
+        pivot[c] = pivot[c].astype("string")
     return pivot
