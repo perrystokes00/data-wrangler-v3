@@ -41,6 +41,22 @@ WORD_EXTS   = {".docx", ".doc"}
 IMAGE_EXTS  = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 
 
+def _arrow_safe(_df):
+    """Coerce mixed-type object columns to string so Streamlit/Arrow can
+    serialize dataframes parsed from arbitrary files (Excel, shapefiles, CSV,
+    Word tables) without an ArrowTypeError."""
+    try:
+        import pandas as _pd
+        if isinstance(_df, _pd.DataFrame):
+            _df = _df.copy()
+            for _c in _df.columns:
+                if _df[_c].dtype == object:
+                    _df[_c] = _df[_c].astype("string")
+    except Exception:
+        pass
+    return _df
+
+
 def view(file_path: str, file_ext: str = None):
     """
     Main dispatcher. Call this from any page.
@@ -561,7 +577,7 @@ def _view_p190(file_path: str):
     if shots:
         df = pd.DataFrame(shots)
         st.metric("Shot points", len(df))
-        st.dataframe(df.head(200), hide_index=True, use_container_width=True)
+        st.dataframe(_arrow_safe(df.head(200)), hide_index=True, use_container_width=True)
 
         # Map if lat/lon available
         lat_col = next((c for c in df.columns
@@ -640,7 +656,7 @@ def _view_shapefile(file_path: str):
     # Attribute table
     display_df = gdf.drop(columns=["geometry"], errors="ignore")
     with _vsection("📋 Attribute table"):
-        st.dataframe(display_df.head(500),
+        st.dataframe(_arrow_safe(display_df.head(500)),
                      hide_index=True, use_container_width=True)
 
     # Map
@@ -743,7 +759,7 @@ def _view_excel(file_path: str):
     try:
         df = xl.parse(sheet)
         st.metric("Rows", f"{len(df):,}")
-        st.dataframe(df.head(500), hide_index=True, use_container_width=True)
+        st.dataframe(_arrow_safe(df.head(500)), hide_index=True, use_container_width=True)
         st.download_button(
             "⬇ Download sheet CSV",
             data=df.to_csv(index=False),
@@ -763,7 +779,7 @@ def _view_csv(file_path: str):
         df = pd.read_csv(file_path, sep=sep, nrows=5000,
                          encoding="utf-8", on_bad_lines="skip")
         st.metric("Rows (preview)", f"{len(df):,}")
-        st.dataframe(df, hide_index=True, use_container_width=True)
+        st.dataframe(_arrow_safe(df), hide_index=True, use_container_width=True)
         st.download_button(
             "⬇ Download CSV",
             data=df.to_csv(index=False),
@@ -815,7 +831,7 @@ def _view_word(file_path: str):
                         try:
                             df = pd.DataFrame(data, columns=headers)
                             st.markdown(f"**Table {i+1}**")
-                            st.dataframe(df, hide_index=True,
+                            st.dataframe(_arrow_safe(df), hide_index=True,
                                          use_container_width=True)
                         except Exception:
                             pass

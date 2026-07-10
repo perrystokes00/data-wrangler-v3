@@ -568,7 +568,7 @@ def render(S):
                 if st.button("🚀 Run Database Initialization",
                              type="primary", key="btn_db_init"):
                     try:
-                        from setup_database import run_migrations, get_version_status
+                        from dataview.core.setup_database import run_migrations, get_version_status
                         with st.spinner("Running migrations…"):
                             result = run_migrations(S.engine)
                         if result["failed"]:

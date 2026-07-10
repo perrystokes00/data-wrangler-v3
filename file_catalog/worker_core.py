@@ -1278,7 +1278,7 @@ def _do_segy(engine, fpath, inv, say) -> FileResult:
     from sqlalchemy import text as _t
     import sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    import extract_core
+    from dataview.file_catalog import extract_core
 
     res = FileResult("done", rt="SEISMIC")
     fext = _os.path.splitext(fpath)[1].lower()

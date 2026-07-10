@@ -323,7 +323,7 @@ def _fk_specs(engine, it, tgt_to_src):
     the source column mapped to that FK column. `tgt_to_src` is {target_col:
     source_col} (from the panel grid or from Load-all's resolved mapping)."""
     try:
-        from dv_table_loader import discover_fks
+        from dataview.mapping.dv_table_loader import discover_fks
     except Exception:
         return []
     try:
@@ -475,7 +475,7 @@ def _section_load_all(engine, confirmed):
                    "open them below. The rest load now.")
 
     if go:
-        import dv_table_loader as L
+        from dataview.mapping import dv_table_loader as L
         out = []
         recon_pending = []
         prog = st.progress(0.0, text="Starting…")
@@ -776,7 +776,7 @@ def _one_panel(engine, it, *, idx):
                        + ", ".join(f"{t} [{tr}]" for t, tr in skipped))
         logs = []
         try:
-            import dv_table_loader as L
+            from dataview.mapping import dv_table_loader as L
             t0 = time.time()
             with st.spinner(f"{'Loading' if apply else 'Planning'} {it['name']}…"):
                 L.load_table(engine, it["file"], spec, apply=apply, log=logs.append)

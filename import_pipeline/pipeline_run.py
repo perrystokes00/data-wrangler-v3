@@ -464,7 +464,7 @@ def _extract_one_proc(arg):
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     _w0 = _time.monotonic()
     try:
-        import extract_core
+        from dataview.file_catalog import extract_core
         fields = extract_core._extract_fields(fpath, fext)
         _sec = _time.monotonic() - _w0
         if fields.get("skip_reason"):
@@ -754,7 +754,7 @@ def _extract_capture_proc(arg):
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     _t0 = _time.monotonic()
     try:
-        import extract_core
+        from dataview.file_catalog import extract_core
         fields = extract_core._extract_fields(fpath, fext)
     except Exception as e:
         return ("err", iid, f"{type(e).__name__}: {e}",

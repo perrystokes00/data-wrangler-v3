@@ -12,18 +12,7 @@ Dialect support: SQL Server · Oracle · Snowflake
 from __future__ import annotations
 import os
 import streamlit as st
-import traceback as _tb
-_orig_df = st.dataframe
-def _trace_df(data=None, *a, **k):
-    try:
-        if hasattr(data, "columns") and "WELL COMPLETION REPORT" in list(data.columns):
-            print("\n>>> FOUND IT — WELL COMPLETION REPORT rendered here:")
-            _tb.print_stack()
-            print(">>> dtypes:\n", data.dtypes)
-    except Exception:
-        pass
-    return _orig_df(data, *a, **k)
-st.dataframe = _trace_df
+
 st.set_page_config(
     page_title="DataView",
     page_icon="🛢",

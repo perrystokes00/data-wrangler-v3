@@ -114,7 +114,7 @@ def configure(*, target_schema=None, target_prefix=None, store_schema=None,
     if ref_table_pattern is not None:
         REF_TABLE_PATTERN = str(ref_table_pattern).strip()
     try:                                            # keep the loader in sync
-        import dv_table_loader as _L
+        from dataview.mapping import dv_table_loader as _L
         _L.REF_TABLE_PATTERN = REF_TABLE_PATTERN
     except Exception:
         pass
@@ -869,7 +869,7 @@ def build_table_spec(engine, target, columns, natural_key):
     Returns (spec, skipped) where skipped is [(target_column, transform), ...]
     for any transform the loader still can't execute.
     """
-    from dv_table_loader import TableSpec, discover_fks, _policy_for
+    from dataview.mapping.dv_table_loader import TableSpec, discover_fks, _policy_for
 
     entity_ids = set()
     try:
@@ -1163,7 +1163,7 @@ def order_by_dependency(engine, items):
     it references by FK (well -> survey hdr -> survey stations). Items without a
     target, or unresolved cycles, fall to the end in stable order."""
     try:
-        from dv_table_loader import discover_fks
+        from dataview.mapping.dv_table_loader import discover_fks
     except Exception:
         return items
     targets = {it["target_table"] for it in items if it.get("target_table")}

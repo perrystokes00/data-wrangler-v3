@@ -31,7 +31,7 @@ import pandas as pd
 # extract_core is the single source of truth for the extension universe AND the
 # dispatcher. We import the SETS from there and rebuild the ext→group map locally
 # (mirroring page_workbench.EXT_GROUP) so this page never drifts from the parser.
-from extract_core import (
+from dataview.file_catalog.extract_core import (
     _extract_fields,
     PDF_EXTS, LAS_EXTS, DLIS_EXTS, LIS_EXTS, SEGY_EXTS, P190_EXTS, SHP_EXTS,
     OFFICE_EXTS, CSV_EXTS, IMAGE_EXTS, WITSML_EXTS, JSON_LOG_EXTS, LOG_EXTS,

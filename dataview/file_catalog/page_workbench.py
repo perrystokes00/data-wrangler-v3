@@ -18,7 +18,7 @@ from pathlib import Path
 # Canonical definitions live in extract_core (shared with the process-pool
 # parser) and are imported back here, so there is one source of truth. Add a
 # new format extension in extract_core, not here.
-from extract_core import (
+from dataview.file_catalog.extract_core import (
     PDF_EXTS, LAS_EXTS, DLIS_EXTS, LIS_EXTS, SEGY_EXTS, P190_EXTS, SHP_EXTS,
     OFFICE_EXTS, CSV_EXTS, IMAGE_EXTS, WITSML_EXTS, JSON_LOG_EXTS, LOG_EXTS,
     _extract_fields,
@@ -123,7 +123,7 @@ def run(engine=None, dialect: str = "mssql"):
         # Headless run page — launches pipeline_run.py in a fresh process and
         # tails its log live (replaces the old Fast Track / monitor embed).
         try:
-            import page_run
+            from dataview.file_catalog import page_run
             page_run.render(engine)
         except Exception as e:
             st.error(f"Run Pipeline unavailable: {e}")
@@ -5017,7 +5017,7 @@ def _pipeline_stages(engine, dialect):
 
         if bcol1.button("Show counts (dry run)", key="pl_x_dry",
                         use_container_width=True):
-            import clear_catalog as _cc
+            from dataview.file_catalog import clear_catalog as _cc
             raw = engine.raw_connection()
             out = []
             try:
@@ -5046,7 +5046,7 @@ def _pipeline_stages(engine, dialect):
             st.code("\n".join(out) or "(nothing)")
 
         if run_clear:
-            import clear_catalog as _cc
+            from dataview.file_catalog import clear_catalog as _cc
             raw = engine.raw_connection()
             out, err = [], None
             try:
@@ -5094,7 +5094,7 @@ def _pipeline_clear(engine, dialect):
         "the dv_* tables. Bulk-loaded data and all reference / spatial tables are "
         "left intact. Files on disk are never touched."
     )
-    import clear_catalog as _cc
+    from dataview.file_catalog import clear_catalog as _cc
 
     if st.button("Preview what would be cleared", key="clr_preview"):
         try:
