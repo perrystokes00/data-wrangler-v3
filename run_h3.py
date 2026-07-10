@@ -76,6 +76,7 @@ def main():
         log("nothing to do."); return
 
     log("[2/4] computing H3 (r4..r7) -> result CSV …")
+    computed_rows = 0
     to_cell, _ = h3_grids._bind_h3()
     with open(coords, encoding="utf-8", errors="replace") as fin, \
          open(result, "w", encoding="utf-8", newline="") as fout:
@@ -89,15 +90,46 @@ def main():
             except Exception:
                 continue
             w.writerow([p[0]] + [row.get(c, "") or "" for c in H3COLS])
+            computed_rows += 1
             if i % 20000 == 0:
                 log(f"      {i:,}")
 
+    log(f"      computed {computed_rows:,} rows -> result CSV")
+    if computed_rows == 0:
+        log("      ERROR: compute wrote 0 rows. Either h3_grids.compute_h3_row is failing "
+            "for every row, or the coords CSV parsed to <3 fields. Inspect: " + result)
+        _rsz = os.path.getsize(result) if os.path.exists(result) else -1
+        log(f"      result CSV size: {_rsz} bytes (kept for inspection; not deleting temps)")
+        return
     log("[3/4] bcp load -> stg.dv_well_h3_stage …")
-    coldefs = ", ".join([f"[{KEY}] NVARCHAR(80)"] + [f"[{c}] NVARCHAR(15)" for c in H3COLS])
+    coldefs = ", ".join([f"[{KEY}] NVARCHAR(80)"] + [f"[{c}] NVARCHAR(20)" for c in H3COLS])
     with eng.begin() as c:
+        # drop any stale staging table from a previous failed run (silent-hole guard)
+        c.execute(text(f"IF OBJECT_ID('{STG}.dv_well_h3_stage') IS NOT NULL "
+                       f"DROP TABLE {STG}.dv_well_h3_stage"))
         c.execute(text(f"CREATE TABLE {STG}.dv_well_h3_stage ({coldefs})"))
-    bcp([f"{STG}.dv_well_h3_stage", "in", result, "-c", "-t|", "-C", "65001",
-         "-T", f"-S{SERVER}", f"-d{DATABASE}", "-q"])
+    _errf = os.path.join(tempfile.gettempdir(), "h3_load_err.txt")
+    loaded_rows = bcp([f"{STG}.dv_well_h3_stage", "in", result, "-c", "-t|", "-r", "0x0a",
+         "-C", "65001", "-T", f"-S{SERVER}", f"-d{DATABASE}", "-q", "-e", _errf])
+    log(f"      staged {loaded_rows:,} rows")
+    if not loaded_rows:
+        log("      WARNING: 0 rows loaded into staging.")
+        try:
+            if os.path.exists(_errf) and os.path.getsize(_errf):
+                log("      --- BCP error file (first 600 chars) ---")
+                log(open(_errf, encoding="utf-8", errors="replace").read()[:600])
+        except Exception as _e:
+            log(f"      (couldn't read error file: {_e})")
+        log(f"      result CSV KEPT for inspection: {result}")
+        log(f"      first 3 result lines:")
+        try:
+            with open(result, encoding="utf-8", errors="replace") as _rf:
+                for _i, _ln in enumerate(_rf):
+                    if _i >= 3: break
+                    log(f"        {_ln.rstrip()!r}")
+        except Exception as _e:
+            log(f"        (couldn't read result: {_e})")
+        return  # stop before deleting temps so you can inspect
 
     log("[4/4] UPDATE dv_well FROM stage …")
     set_clause = ", ".join(f"t.[{c}] = s.[{c}]" for c in H3COLS)
