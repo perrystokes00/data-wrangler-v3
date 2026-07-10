@@ -384,6 +384,20 @@ def parse_segy_rows(arg):
 
     ilr = h.get("inline_range");    xlr = h.get("crossline_range")
     cxr = h.get("cdp_x_range");     cyr = h.get("cdp_y_range")
+    # Survey outline: convex hull of the sampled CDP points (same as the pool
+    # extract path). For 2D it's the line corridor; for 3D the survey polygon.
+    # cdp_points already read for the bbox, so this adds negligible time.
+    _outline = None
+    try:
+        _pts = [(x, y) for (x, y) in (h.get("cdp_points") or [])
+                if x is not None and y is not None and (x != 0 or y != 0)]
+        if len(_pts) >= 3:
+            from shapely.geometry import MultiPoint
+            _hull = MultiPoint(_pts).convex_hull
+            if not _hull.is_empty:
+                _outline = _hull.wkt
+    except Exception:
+        _outline = None
     hid = _uuid_segy.uuid5(_uuid_segy.NAMESPACE_URL,
                            str(inv) if inv is not None else fpath).hex.upper()
     row = {
@@ -399,6 +413,7 @@ def parse_segy_rows(arg):
         # coords, not necessarily WGS84 — promote/geo can reproject if EPSG known)
         "BBOX_MIN_LON": _rng(cxr, 0), "BBOX_MAX_LON": _rng(cxr, 1),
         "BBOX_MIN_LAT": _rng(cyr, 0), "BBOX_MAX_LAT": _rng(cyr, 1),
+        "SURVEY_OUTLINE": _outline,
         "EXTRACTED_BY": "DataWrangler",
     }
     return {SEIS_TABLE: [row]}
