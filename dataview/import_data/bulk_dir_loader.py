@@ -1,7 +1,7 @@
 """
 bulk_dir_loader.py — set-based directory loader (BCP staging pipeline).
 
-PHASE 1 (this file): scan a directory of related CSVs, fingerprint each, re-emit
+PHASE 1 (this file): scan a directory of well files, extract + fingerprint each, re-emit
 each as a safe-delimited file (correct quote handling — no naive comma splitting),
 auto-create an all-varchar staging table per (target, shape), and BCP-load it onto
 the server. Nothing is promoted here; staging only.
@@ -45,7 +45,32 @@ _dlis = _opt_import("dlis_header_loader")
 _lis = _opt_import("lis_header_loader")
 _witsml = _opt_import("witsml_header_loader")
 _pdf = _opt_import("pdf_document_loader")
+_docx = _opt_import("docx_document_loader")
 _pdf_review = _opt_import("pdf_field_review")
+
+# which extractor owns which extension, and what it needs — so a scan that finds files
+# it cannot extract SAYS SO instead of silently skipping them.
+def _extractor_status():
+    return [
+        ("LAS",    [".las"],                 _las,     "las_header_loader",   "lasio"),
+        ("DLIS",   [".dlis"],                _dlis,    "dlis_header_loader",  "dlisio"),
+        ("LIS",    [".lis"],                 _lis,     "lis_header_loader",   "—"),
+        ("WITSML", [".xml", ".wml"],         _witsml,  "witsml_header_loader", "—"),
+        ("PDF",    [".pdf"],                 _pdf,     "pdf_document_loader", "pdfplumber"),
+        ("Word",   [".docx", ".doc", ".odt"], _docx,   "docx_document_loader", "python-docx"),
+    ]
+
+
+def _missing_extractors(directory, recursive):
+    """[(label, n_files, module, dep)] for formats present on disk with no working extractor."""
+    out = []
+    for label, exts, mod, modname, dep in _extractor_status():
+        if mod is None:
+            files = _glob_ext(directory, exts, recursive)
+            files = [f for f in files if not os.path.basename(f).startswith("~$")]
+            if files:
+                out.append((label, len(files), modname, dep))
+    return out
 
 STG_SCHEMA = "stg"
 FS = "\x01"          # field separator written into the safe file
@@ -255,6 +280,41 @@ def _glob_ext(directory, exts, recursive):
     return sorted(set(out))
 
 
+def _call_extractor(fn, directory, out_dir, source, files, recursive):
+    """Call an extractor's write_staging_csvs across signature variants.
+
+    Older extractors are `write_staging_csvs(directory, out_dir=..., source=...)` and glob
+    the directory themselves; newer ones also take `files=[...]` (needed for a recursive
+    scan, where the files live in subfolders). Passing `files=` to an older one raises
+    TypeError — which used to be swallowed, so the format silently produced nothing.
+    Introspect and call whichever form it actually supports."""
+    import inspect
+    kw = {"out_dir": out_dir, "source": source}
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "files" in params:
+        return fn(directory, files=files, **kw)
+    # Extractor globs `directory` itself. That's fine — and identical to passing the list —
+    # so long as every file we found actually lives there. Only files in SUBFOLDERS would
+    # be missed, so check for those specifically rather than assuming a recursive scan is
+    # unsupported (ticking "recursive" on a flat folder must still work).
+    base = os.path.abspath(directory)
+    nested = [f for f in (files or [])
+              if os.path.dirname(os.path.abspath(f)) != base]
+    if nested:
+        sub = sorted({os.path.dirname(os.path.relpath(f, base)) for f in nested})
+        raise TypeError(
+            f"{len(nested)} file(s) live in subfolder(s) ({', '.join(sub[:3])}"
+            f"{'…' if len(sub) > 3 else ''}), but "
+            f"{getattr(fn, '__module__', 'this extractor').split('.')[-1]}"
+            f".write_staging_csvs() has no `files` parameter, so it can only read the folder "
+            f"it is given. Point the loader at that subfolder, or add `files=[...]` to the "
+            f"extractor to enable recursive scans.")
+    return fn(directory, **kw)
+
+
 def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\Bulk", recursive=False):
     """profile_directory using the JSON catalog when a path is set (fast), else live
     introspection. Adds filename-based matching for dv_r_* reference tables."""
@@ -309,8 +369,8 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
         try:
             las_out = os.path.join(bulk_dir, "_las_extract")     # accessible to bcp, unlike os temp
             os.makedirs(las_out, exist_ok=True)
-            lp, cp, nl, nc = _las.write_staging_csvs(directory, out_dir=las_out, source="LAS",
-                                                     files=las_files)
+            lp, cp, nl, nc = _call_extractor(_las.write_staging_csvs, directory, las_out,
+                                             "LAS", las_files, recursive)
             log_cols = next(_csv.reader(open(lp, encoding="utf-8")))
             curve_cols = next(_csv.reader(open(cp, encoding="utf-8")))
             scan["rows"].append({"file": f"LAS → log  ({nl} files)", "path": lp, "cols": log_cols,
@@ -326,6 +386,7 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
             scan["las_count"] = len(las_files)
         except Exception as e:
             scan["las_error"] = str(e)
+            scan.setdefault("extract_errors", {})["las"] = str(e)   # or it never reaches the UI
 
     # DLIS / LIS → dv_well_log + dv_well_log_curve (like LAS, separate _<fmt> staging)
     def _detect_logfmt(ext, mod, tag):
@@ -394,8 +455,8 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
     if pdf_files and _pdf is not None:
         try:
             out = os.path.join(bulk_dir, "_pdf_extract"); os.makedirs(out, exist_ok=True)
-            written = _pdf.write_staging_csvs(directory, out_dir=out, source="PDF",
-                                              files=pdf_files if recursive else None)
+            written = _call_extractor(_pdf.write_staging_csvs, directory, out, "PDF",
+                                      pdf_files, recursive)
             for kind, (path, n) in written.items():
                 target = _pdf.TARGET.get(kind)
                 if not target:
@@ -420,6 +481,38 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
         except Exception as e:
             scan.setdefault("extract_errors", {})["pdf"] = str(e)
 
+    # Word documents (final well reports, completion/geological summaries) → well, tops,
+    # log + curves, core, survey. Same review → map → promote path as the PDF suite.
+    docx_files = _glob_ext(directory, [".docx", ".doc", ".odt"], recursive)
+    docx_files = [f for f in docx_files if not os.path.basename(f).startswith("~$")]
+    if docx_files and _docx is not None:
+        try:
+            out = os.path.join(bulk_dir, "_docx_extract"); os.makedirs(out, exist_ok=True)
+            written = _call_extractor(_docx.write_staging_csvs, directory, out, "DOCX",
+                                      docx_files, recursive)
+            for kind, (path, n) in written.items():
+                target = _docx.TARGET.get(kind)
+                if not target:
+                    continue
+                cols = next(_csv.reader(open(path, encoding="utf-8")))
+                needs = "UWI" in [c.upper() for c in cols]
+                scan["rows"].append({"file": f"DOCX {kind}  ({n} rows)", "path": path, "cols": cols,
+                                     "table": target, "kind": "data", "score": 1.0,
+                                     "extracted": "docx", "needs_uwi": needs,
+                                     "stg_table": f"stg.{target.lower()}_docx"})
+            present = [r["table"] for r in scan["rows"]]
+            docx_order = ["DV_WELL", "DV_WELL_FORMATION_TOP", "DV_WELL_LOG", "DV_WELL_LOG_CURVE",
+                          "DV_WELL_CORE", "DV_WELL_DIR_SRVY_HDR", "DV_WELL_DIR_SRVY_STA"]
+            for t in docx_order:
+                if t in present:
+                    if t in scan["order"]:
+                        scan["order"].remove(t)
+                    scan["order"].append(t)
+        except Exception as e:
+            scan.setdefault("extract_errors", {})["docx"] = str(e)
+
+    # formats present on disk that no working extractor can read → reported, never silent
+    scan["missing_extractors"] = _missing_extractors(directory, recursive)
     return scan
 
 
@@ -1854,7 +1947,7 @@ def run():
     import pandas as pd
     ss = st.session_state
     hc1, hc2 = st.columns([4, 1])
-    hc1.header("Bulk Directory Loader")
+    hc1.header("Well File Loader")
     if hc2.button("↻ Reset run", help="Clear scan, mappings and staged state and start over "
                                        "(keeps server/database/paths)"):
         keep = {k: ss[k] for k in ("bdl_server", "bdl_db", "bdl_dir", "bdl_cat", "bdl_bulk",
@@ -1863,12 +1956,13 @@ def run():
             del ss[k]
         ss.update(keep)
         st.rerun()
-    st.caption("Phase 1 — scan, fingerprint, and BCP-stage related CSVs onto the server.")
+    st.caption("Scan a directory of well files — LAS · DLIS · LIS · WITSML · PDF · Word — extract them to staging, then map → FK → promote.  (CSV / Excel go through the tabular loader.)")
 
     c1, c2 = st.columns(2)
     server = c1.text_input("Server", value=ss.get("bdl_server", r"localhost\SQLEXPRESS"))
     database = c2.text_input("Database", value=ss.get("bdl_db", "DataView_Demo"))
-    directory = st.text_input("Directory of related CSVs", value=ss.get("bdl_dir", ""))
+    directory = st.text_input("Directory of well files (LAS / DLIS / LIS / WITSML / PDF / Word)",
+                              value=ss.get("bdl_dir", ""))
     recursive = st.checkbox("Include subdirectories (recursive scan)", value=ss.get("bdl_recursive", False))
     catalog = st.text_input("FK catalog JSON (fast; blank = introspect live)",
                             value=ss.get("bdl_cat", r"dataview\schema_registry\dataview_fk_catalog.json"))
@@ -1890,11 +1984,17 @@ def run():
         return
 
     # surface extractor availability + any extraction errors (so nothing fails silently)
-    missing = [n for n, m in (("dlis", _dlis), ("lis", _lis), ("witsml", _witsml)) if m is None]
-    if missing:
-        st.caption("⚠️ extractor module(s) not importable: " + ", ".join(missing) +
-                   " — those file types won't be detected. Check the loader is deployed next to "
-                   "`bulk_dir_loader.py`.")
+    for label, n, modname, dep in (scan.get("missing_extractors") or []):
+        st.error(f"❌ **{n} {label} file(s) found but not scanned** — the `{modname}` extractor "
+                 f"couldn't be imported, so they were skipped."
+                 + (f"  Most likely `{dep}` isn't installed: `pip install {dep}`." if dep != "—" else "")
+                 + f"  Also confirm `{modname}.py` is deployed next to `bulk_dir_loader.py` "
+                   f"in `dataview\\import_data\\`.")
+    absent = [n for n, m in (("las", _las), ("dlis", _dlis), ("lis", _lis), ("witsml", _witsml),
+                             ("pdf", _pdf), ("docx", _docx)) if m is None]
+    if absent:
+        st.caption("extractor module(s) not importable: " + ", ".join(absent) +
+                   " — those file types won't be detected.")
     if scan.get("extract_errors"):
         for fmt, err in scan["extract_errors"].items():
             st.warning(f"{fmt.upper()} extraction error: {err}")

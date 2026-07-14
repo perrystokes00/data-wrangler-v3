@@ -798,7 +798,7 @@ with st.sidebar:
             ("well_map",      "🗺",  "Mapping"),
             ("documents",     "📂", "Documents"),
             ("pipeline",      "📥", "Import Data"),
-            ("dirloader", "📁", "Directory Loader"),
+            ("load_data",     "📁", "Directory Loader"),
             ("monitor",       "📡", "Pipeline Monitor"),
             ("db_explorer",   "🔍", "DB Explorer"),
             ("workbench",     "🗂️", "File Catalog"),
@@ -1203,5 +1203,25 @@ elif S.app_mode == "dirloader":
         page_dir_loader.run(S.engine)
     except Exception as e:
         st.error(f"Directory Loader error: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+
+# ── LOAD DATA (router: extensions pick the path) ──────────────────────
+elif S.app_mode == "load_data":
+    try:
+        from dataview.import_data import load_router
+        load_router.run(S.engine)
+    except Exception as e:
+        st.error(f"Load Data error: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+
+# ── BULK LOADER (LAS / DLIS / LIS / WITSML / PDF / Word) ──────────────
+elif S.app_mode == "bulkloader":
+    try:
+        from dataview.import_data import bulk_dir_loader
+        bulk_dir_loader.run()
+    except Exception as e:
+        st.error(f"Bulk Loader error: {e}")
         import traceback
         st.code(traceback.format_exc())

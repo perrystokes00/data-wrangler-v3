@@ -101,12 +101,72 @@ def _ref_filename_signal(fname, table):
     ttok = set(re.split(r"[_\W]+", table.lower())) - _REF_STOPWORDS
     return 0.55 if (ftok & ttok) else 0.0
 
-def profile_directory(directory, catalog_path):
-    """Pure function → the plan dict the UI renders. No Streamlit, no writes."""
+XL_EXTS = (".xlsx", ".xlsm", ".xltx", ".xls")
+SHEET_DIR = "_xl_sheets"          # sidecar CSVs land here, beside the workbooks
+
+
+def explode_workbooks(directory, recursive=False):
+    """Every sheet of every Excel workbook in `directory` → a sidecar CSV in
+    <directory>\\_xl_sheets\\<workbook>__<sheet>.csv, so the rest of the loader
+    (header read, sampling, BCP, mapping) treats sheets exactly like CSVs.
+
+    Blank sheets are skipped. Re-scanning rewrites the sidecars, so edits to the
+    workbook are picked up. Returns (csv_paths, notes)."""
+    import re
+    out, notes = [], []
+    books = []
+    for ext in XL_EXTS:
+        if recursive:
+            books += glob.glob(os.path.join(directory, "**", f"*{ext}"), recursive=True)
+            books += glob.glob(os.path.join(directory, "**", f"*{ext.upper()}"), recursive=True)
+        else:
+            books += glob.glob(os.path.join(directory, f"*{ext}"))
+            books += glob.glob(os.path.join(directory, f"*{ext.upper()}"))
+    books = sorted({b for b in books
+                    if not os.path.basename(b).startswith("~$")
+                    and SHEET_DIR not in os.path.normpath(b).split(os.sep)})
+    if not books:
+        return out, notes
+    import pandas as pd
+    dest = os.path.join(directory, SHEET_DIR)
+    os.makedirs(dest, exist_ok=True)
+    for b in books:
+        stem = os.path.splitext(os.path.basename(b))[0]
+        try:
+            book = pd.read_excel(b, sheet_name=None, dtype=str)     # all sheets
+        except Exception as e:
+            notes.append(f"{os.path.basename(b)}: unreadable ({e})")
+            continue
+        for sheet, df in book.items():
+            df = df.dropna(how="all").dropna(axis=1, how="all")
+            if df.empty or not len(df.columns):
+                notes.append(f"{os.path.basename(b)}[{sheet}]: empty — skipped")
+                continue
+            safe = re.sub(r"[^A-Za-z0-9]+", "_", str(sheet)).strip("_") or "sheet"
+            p = os.path.join(dest, f"{stem}__{safe}.csv")
+            try:
+                df.to_csv(p, index=False, encoding="utf-8")
+                out.append(p)
+                notes.append(f"{os.path.basename(b)}[{sheet}] → {os.path.basename(p)} "
+                             f"({len(df)} rows)")
+            except OSError as e:
+                notes.append(f"{os.path.basename(b)}[{sheet}]: write failed ({e})")
+    return sorted(out), notes
+
+
+def profile_directory(directory, catalog_path, recursive=False):
+    """Pure function → the plan dict the UI renders. No Streamlit, no writes
+    (other than exploding any Excel workbooks into sidecar CSVs)."""
     FKC, COLS, KIND, shape = load_catalog(catalog_path)
     DATA = {t: c for t, c in COLS.items() if is_data_table(t)}
     REF  = {t: c for t, c in COLS.items() if is_ref_table(t)}
-    files = sorted(glob.glob(os.path.join(directory, "*.csv")))
+    if recursive:
+        files = sorted(p for p in glob.glob(os.path.join(directory, "**", "*.csv"), recursive=True)
+                       if SHEET_DIR not in os.path.normpath(p).split(os.sep))
+    else:
+        files = sorted(glob.glob(os.path.join(directory, "*.csv")))
+    xl_files, xl_notes = explode_workbooks(directory, recursive)   # Excel sheets → CSV, then treat alike
+    files = sorted(files + xl_files)
     rows = []
     for path in files:
         f = os.path.basename(path); cols = read_header(path)
@@ -152,7 +212,7 @@ def profile_directory(directory, catalog_path):
     all_ref_tables = sorted([t for t in COLS if is_ref_table(t)]) or []
     return dict(rows=rows, order=order, worklist=worklist, shape=shape,
                 data_tables=data_tables, all_ref_tables=all_ref_tables,
-                n_files=len(files), ref_tables=sorted(ref_tables))
+                n_files=len(files), ref_tables=sorted(ref_tables), xl_notes=xl_notes)
 
 
 
@@ -536,9 +596,11 @@ def _default_catalog():
     return _canon
 
 def _pick(ss):
-    st.subheader("① Choose a directory of CSVs")
+    st.subheader("① Choose a directory of CSVs / Excel workbooks")
     ss.dl_dir = st.text_input("Directory", ss.get("dl_dir", ""),
                               placeholder=r"C:\...\well_picks")
+    ss.dl_recursive = st.checkbox("Include subdirectories (recursive scan)",
+                                  value=ss.get("dl_recursive", False))
     ss.dl_cat = st.text_input("FK catalog (dataview_fk_catalog.json)",
                               ss.get("dl_cat", _default_catalog()))
     if st.button("🔍 Scan", type="primary", use_container_width=True):
@@ -547,7 +609,7 @@ def _pick(ss):
         if not os.path.exists(ss.dl_cat):
             st.error("Catalog file not found."); return
         try:
-            ss.dl_plan = profile_directory(ss.dl_dir, ss.dl_cat)
+            ss.dl_plan = profile_directory(ss.dl_dir, ss.dl_cat, ss.dl_recursive)
         except Exception as e:
             st.error(f"Scan failed: {e}"); return
         ss.dl_overrides = {}
@@ -559,7 +621,14 @@ def _review(ss):
     if plan["shape"] != "rich":
         st.warning("Plain catalog (no column lists) — file→table matching is limited. "
                    "Use the rich dataview_fk_catalog.json for full matching.")
-    st.caption(f"{plan['n_files']} CSV(s) · confirm or correct each file's target table below.")
+    st.caption(f"{plan['n_files']} table file(s) · confirm or correct each file's target table below.")
+    _xl = plan.get("xl_notes") or []
+    if _xl:
+        with st.expander(f"📗 {len(_xl)} Excel sheet(s) expanded to CSV"):
+            st.caption("Each workbook sheet is written to `_xl_sheets\\` and loaded like a CSV. "
+                       "Re-scan after editing a workbook to refresh them.")
+            for n in _xl:
+                st.markdown(f"- {n}")
 
     import pandas as pd
     grid = pd.DataFrame([{"File": r["file"],

@@ -197,6 +197,32 @@ def diagnose(exc) -> Diagnosis:
                          "SQL Server hit a value it couldn't cast to the target type.",
                          adv, sql_number=num or 245, raw=cleaned)
 
+    # 207 — invalid column name (often a function rule given the wrong argument shape)
+    m = re.search(r"Invalid column name '([^']*)'", raw)
+    if m:
+        col = m.group(1)
+        tmpl = "{" in col and "}" in col
+        if tmpl:
+            adv = [f"A **function rule** was given a `concat` template (`{col}`) where a plain "
+                   f"column name was expected, so SQL Server looked for a column literally "
+                   f"called that.",
+                   "In **④ Derived columns**, the argument shape differs per function: "
+                   "`seq_num` takes partition **column names** (`uwi,log_id` — no braces); "
+                   "`concat` takes a **template** (`{uwi}_{log_id}_{curve_name}`).",
+                   "If you want a generated key, switch that rule's function to **concat**. "
+                   "If you want a running number, keep `seq_num` and give it bare column names."]
+            title = f"Function rule mismatch: template used where a column name was expected"
+        else:
+            adv = [f"The load referenced a column '{col}' that doesn't exist in the staging "
+                   f"table or the target.",
+                   "Check the mapping for a stale/renamed column, or re-scan so staging matches "
+                   "the file.",
+                   "A function rule naming a source column that isn't in this file will do this too."]
+            title = f"Invalid column name: '{col}'"
+        return Diagnosis("INVALID_COLUMN", title,
+                         f"SQL Server couldn't resolve the column '{col}'.",
+                         adv, column=col, sql_number=num or 207, raw=cleaned)
+
     # 208 — invalid object
     m = re.search(r"Invalid object name '([^']+)'", raw)
     if m:

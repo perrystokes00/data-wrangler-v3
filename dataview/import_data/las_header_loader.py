@@ -68,15 +68,47 @@ def _wget(well, *keys, default=""):
     return default
 
 
-def extract_directory(directory, source="LAS"):
-    """Parse every .las in a directory → (log_rows, curve_rows) as lists of dicts."""
+def find_las(directory, recursive=False):
+    """Every .las under `directory`, de-duplicated. Globbing both *.las and *.LAS returns
+    each file TWICE on a case-insensitive filesystem (Windows/NTFS), which silently doubles
+    every log and curve — so normalise and de-dup on the real path."""
+    pats = ["*.las", "*.LAS"]
+    hits = []
+    for p in pats:
+        hits += (glob.glob(os.path.join(directory, "**", p), recursive=True) if recursive
+                 else glob.glob(os.path.join(directory, p)))
+    seen, out = set(), []
+    for h in hits:
+        key = os.path.normcase(os.path.abspath(h))
+        if key not in seen:
+            seen.add(key)
+            out.append(h)
+    return sorted(out)
+
+
+def extract_directory(directory, source="LAS", files=None, recursive=False):
+    """Parse every .las in a directory (or the given `files`) → (log_rows, curve_rows)."""
+    import re as _re
     log_rows, curve_rows = [], []
-    for path in sorted(glob.glob(os.path.join(directory, "*.las")) +
-                       glob.glob(os.path.join(directory, "*.LAS"))):
+    paths = files if files is not None else find_las(directory, recursive)
+    seen = set()
+    used_log_ids = {}
+    for path in sorted(paths):
+        key = os.path.normcase(os.path.abspath(path))    # never parse the same file twice
+        if key in seen:
+            continue
+        seen.add(key)
         well, curves, data = parse_las(path)
         stem = os.path.splitext(os.path.basename(path))[0]
-        log_id = f"LOG_{stem}"
         uwi = _wget(well, "UWI", "API", "WELL")
+        # LOG_ID follows the DataView convention LOG_<uwi> (matches well_log.csv), NOT the
+        # filename — a filename-derived id blows past dv_well_log.log_id / dv_well_log_curve
+        # .curve_id (varchar(40)) on its own. Fall back to the filename only if there's no UWI.
+        uwi_key = _re.sub(r"[^A-Za-z0-9]", "", str(uwi or ""))
+        base_id = f"LOG_{uwi_key}" if uwi_key else f"LOG_{stem}"
+        n = used_log_ids.get(base_id, 0) + 1
+        used_log_ids[base_id] = n
+        log_id = base_id if n == 1 else f"{base_id}_{n}"   # 2nd LAS for a well → _2, _3, …
         null_val = _wget(well, "NULL", default="-999.25")
         try: null_f = float(null_val)
         except ValueError: null_f = -999.25
@@ -110,12 +142,17 @@ def extract_directory(directory, source="LAS"):
     return log_rows, curve_rows
 
 
-def write_staging_csvs(directory, out_dir=None, source="LAS"):
+def write_staging_csvs(directory, out_dir=None, source="LAS", files=None, recursive=False):
     """Extract a directory of LAS files → well_log.csv + well_log_curve.csv in out_dir
-    (defaults to the LAS directory). Returns (log_csv_path, curve_csv_path, n_logs, n_curves)."""
+    (defaults to the LAS directory). Returns (log_csv_path, curve_csv_path, n_logs, n_curves).
+
+    `files` — an explicit, already-deduplicated list of LAS paths (what bulk_dir_loader
+    passes). When given, `directory` is only used as the default out_dir; this is what makes
+    a recursive scan work, since the files may live in subfolders.
+    `recursive` — when globbing ourselves (no `files`), walk subfolders too."""
     out_dir = out_dir or directory
     os.makedirs(out_dir, exist_ok=True)
-    log_rows, curve_rows = extract_directory(directory, source)
+    log_rows, curve_rows = extract_directory(directory, source, files=files, recursive=recursive)
     log_cols = ["UWI", "LOG_ID", "LOG_TYPE", "LOG_DATE", "RUN_NO", "TOP_DEPTH", "BASE_DEPTH", "SOURCE"]
     curve_cols = ["UWI", "LOG_ID", "CURVE_NAME", "CURVE_DESCRIPTION", "CURVE_UNIT",
                   "MIN_VALUE", "MAX_VALUE", "SOURCE"]
