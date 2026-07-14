@@ -224,7 +224,7 @@ def render(S):
 
     # ── Auto-load DataView schema if not yet loaded ─────────────────
     if S.ppdm_schema is None:
-        _schema_dir = _os.path.join(_os.path.dirname(__file__), "schema_registry")
+        _schema_dir = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "schema_registry")
         _schema_files = sorted([
             f for f in _os.listdir(_schema_dir)
             if f.endswith(".json") and "schema_domain" in f
@@ -504,7 +504,7 @@ def render(S):
                     try:
                         import json as _cj, pickle as _cp, pathlib as _cpp
                         from dataview.core.schema import load_schema_from_dict as _clsfd
-                        _cpath = r"schema_registry\dataview_schema_domain.json"
+                        _cpath = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "schema_registry", "dataview_schema_domain.json")
                         _cpkl  = _cpp.Path(_cpath).with_suffix(".pkl")
                         if _cpkl.exists():
                             with open(_cpkl, "rb") as _cf:
@@ -972,7 +972,7 @@ def render(S):
         # ── 4a. Schema status ───────────────────────────────────────────
         if S.ppdm_schema is None:
             # Auto-load schema from schema_registry
-            _schema_dir = _os.path.join(_os.path.dirname(__file__), "schema_registry")
+            _schema_dir = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "schema_registry")
             _schema_files = sorted([
                 f for f in _os.listdir(_schema_dir)
                 if f.endswith(".json") and "schema_domain" in f

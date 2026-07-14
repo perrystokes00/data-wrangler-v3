@@ -171,7 +171,12 @@ def _deactivate(engine, table: str, pk: str,
 def _load_seed_file() -> dict:
     """Load seed data from schema_registry/dv_standards_seed.json."""
     import json
+    # resolve relative to this module first (launch-location-independent, matches
+    # fk_catalog.py / page_pipeline.py), then fall back to cwd-relative paths.
+    _here = Path(__file__).resolve()
     for path in [
+        _here.parent.parent / "schema_registry" / "dv_standards_seed.json",   # dataview\schema_registry\
+        _here.parent / "schema_registry" / "dv_standards_seed.json",          # if module sits directly under dataview\
         Path("schema_registry") / "dv_standards_seed.json",
         Path("dv_standards_seed.json"),
     ]:

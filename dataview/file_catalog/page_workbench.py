@@ -4242,10 +4242,13 @@ Run with **Apply off first** to review the counts, then turn it on to commit.
                     _env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
                     _CREATE_NO_WINDOW = 0x08000000
                     _fh = open(_logfile, "w", encoding="utf-8")
+                    _repo_root = os.path.dirname(os.path.dirname(
+                        os.path.dirname(os.path.abspath(__file__))))
                     _proc = subprocess.Popen(
-                        [_sys.executable, "-u", _runner, _cfgp],
+                        [_sys.executable, "-u", "-m",
+                         "dataview.import_data.pipeline_proc_runner", _cfgp],
                         stdout=_fh, stderr=subprocess.STDOUT,
-                        cwd=os.path.dirname(_runner) or None, env=_env,
+                        cwd=_repo_root, env=_env,
                         creationflags=_CREATE_NO_WINDOW)
                     _result["proc"] = _proc
                     st.session_state["fp_logfile"] = _logfile

@@ -17,6 +17,8 @@ CONSOLE_LOG = os.path.join(REPORT_ROOT, "_run_console.log")
 DEFAULT_ROOT = (r"C:\Users\perry\OneDrive\Documents\PPDM\claude_use_ai"
                 r"\data_wrangler\training\test_crawl")
 CREATE_NO_WINDOW = 0x08000000     # no console window (Windows)
+_REPO_ROOT = os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))  # dir containing dataview/
 
 
 def _read(path=CONSOLE_LOG, tail=16000):
@@ -111,7 +113,7 @@ def render(engine=None):
     b1, b2 = st.columns(2)
     if b1.button("▶ Run", type="primary", disabled=running,
                  use_container_width=True):
-        cmd = [sys.executable, "-u", "pipeline_run.py",
+        cmd = [sys.executable, "-u", "-m", "dataview.import_data.pipeline_run",
                "--root", root, "--server", SERVER, "--database", DATABASE,
                "--workers", str(int(workers)), "--parse-mode", "process",
                "--no-vault", "--report-root", REPORT_ROOT,
@@ -124,7 +126,7 @@ def render(engine=None):
         fh = open(CONSOLE_LOG, "w", encoding="utf-8")
         _env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         st.session_state["_run_proc"] = subprocess.Popen(
-            cmd, stdout=fh, stderr=subprocess.STDOUT, cwd=os.getcwd(),
+            cmd, stdout=fh, stderr=subprocess.STDOUT, cwd=_REPO_ROOT,
             creationflags=CREATE_NO_WINDOW, env=_env)
         st.session_state["_run_started"] = time.time()
         st.rerun()

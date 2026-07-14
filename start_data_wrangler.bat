@@ -5,7 +5,7 @@ echo  DataView v3
 echo ============================================
 echo.
 
-cd /d C:\Users\perry\OneDrive\Documents\PPDM\claude_use_ai\data_wrangler\data_wrangler_v3
+cd /d C:\Users\perry\OneDrive\Documents\PPDM\claude_use_ai\data_wrangler\data_wrangler_clean
 
 if exist "venv\Scripts\activate.bat" (
     call venv\Scripts\activate.bat

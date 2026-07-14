@@ -9,9 +9,27 @@ All heavy modules loaded lazily after connect.
 
 Dialect support: SQL Server · Oracle · Snowflake
 """
+
 from __future__ import annotations
 import os
 import streamlit as st
+
+# ── module trace probe (temporary) ──
+import sys as _sys, os as _os, atexit as _atexit
+def _dump_loaded_modules():
+    base = _os.path.dirname(_os.path.abspath(__file__)).lower()
+    seen = set()
+    for _name, _mod in list(_sys.modules.items()):
+        fp = getattr(_mod, "__file__", None)
+        if not fp:
+            continue
+        ap = _os.path.abspath(fp); low = ap.lower()
+        if base in low and "\\venv\\" not in low and "\\__pycache__\\" not in low:
+            seen.add(_os.path.relpath(ap, base))
+    with open(_os.path.join(base, "loaded_modules.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(sorted(seen)) + "\n")
+_atexit.register(_dump_loaded_modules)
+# ── end probe ─
 
 st.set_page_config(
     page_title="DataView",
@@ -780,6 +798,7 @@ with st.sidebar:
             ("well_map",      "🗺",  "Mapping"),
             ("documents",     "📂", "Documents"),
             ("pipeline",      "📥", "Import Data"),
+            ("dirloader", "📁", "Directory Loader"),
             ("monitor",       "📡", "Pipeline Monitor"),
             ("db_explorer",   "🔍", "DB Explorer"),
             ("workbench",     "🗂️", "File Catalog"),
@@ -1012,22 +1031,6 @@ elif S.app_mode == "documents":
     except Exception as e:
         st.error(f"Documents error: {e}")
 
-# ── IMPORTER ──────────────────────────────────────────────────────────
-elif S.app_mode == "importer":
-    try:
-        import page_dv_importer
-        page_dv_importer.render(S.engine)
-    except Exception as e:
-        st.error(f"Importer error: {e}")
-
-# ── PPDM EXPORT ───────────────────────────────────────────────────────
-elif S.app_mode == "ppdm_export":
-    try:
-        import page_dv_export
-        page_dv_export.render(S.engine)
-    except Exception as e:
-        st.error(f"Export error: {e}")
-
 # ── DB EXPLORER ───────────────────────────────────────────────────────
 elif S.app_mode == "db_explorer":
     try:
@@ -1192,5 +1195,13 @@ elif S.app_mode == "pipeline":
         page_pipeline.render(S)
     except Exception as e:
         st.error(f"Pipeline error: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+elif S.app_mode == "dirloader":
+    try:
+        from dataview.import_data import page_dir_loader
+        page_dir_loader.run(S.engine)
+    except Exception as e:
+        st.error(f"Directory Loader error: {e}")
         import traceback
         st.code(traceback.format_exc())
