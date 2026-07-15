@@ -113,14 +113,17 @@ def extract_directory(directory, source="LAS", files=None, recursive=False):
         try: null_f = float(null_val)
         except ValueError: null_f = -999.25
 
+        # depth unit comes from the LAS itself (STRT .FT / .M) — never assumed
+        depth_ouom = (well.get("STRT", {}).get("unit") or "FT").upper()
         log_rows.append({
-            "UWI": uwi, "LOG_ID": log_id, "LOG_TYPE": "LAS",
-            "LOG_DATE": _wget(well, "DATE", "DATE_LOG"),
-            "RUN_NO": _wget(well, "RUN", default="1"),
-            "TOP_DEPTH": _wget(well, "STRT"), "BASE_DEPTH": _wget(well, "STOP"),
-            "SOURCE": source})
+            "uwi": uwi, "log_id": log_id, "log_type": "LAS",
+            "log_date": _wget(well, "DATE", "DATE_LOG"),
+            "run_num": _wget(well, "RUN", default="1"),
+            "top_depth": _wget(well, "STRT"), "base_depth": _wget(well, "STOP"),
+            "depth_ouom": depth_ouom, "source": source})
 
         # per-curve min/max from the data section; column 0 is the depth index → skip as a curve
+        seen_cv = {}
         for ci, c in enumerate(curves):
             if ci == 0:
                 continue                                   # depth index, not a log curve
@@ -133,12 +136,18 @@ def extract_directory(directory, source="LAS", files=None, recursive=False):
                             vals.append(f)
                     except ValueError:
                         pass
+            # curve_id is NOT NULL with no source column — generate it here so no concat
+            # rule is needed. log_id already carries the uwi; repeated mnemonics get _2, _3.
+            n = seen_cv.get(c["mnem"], 0) + 1
+            seen_cv[c["mnem"]] = n
+            cid = f'{log_id}_{c["mnem"]}' + ("" if n == 1 else f"_{n}")
             curve_rows.append({
-                "UWI": uwi, "LOG_ID": log_id, "CURVE_NAME": c["mnem"],
-                "CURVE_DESCRIPTION": c["desc"], "CURVE_UNIT": c["unit"],
-                "MIN_VALUE": (f"{min(vals):.4g}" if vals else ""),
-                "MAX_VALUE": (f"{max(vals):.4g}" if vals else ""),
-                "SOURCE": source})
+                "uwi": uwi, "log_id": log_id, "curve_id": cid[:40],
+                "mnemonic": c["mnem"],
+                "curve_description": c["desc"], "curve_unit": c["unit"],
+                "min_value": (f"{min(vals):.4g}" if vals else ""),
+                "max_value": (f"{max(vals):.4g}" if vals else ""),
+                "depth_ouom": depth_ouom, "source": source})
     return log_rows, curve_rows
 
 
@@ -153,9 +162,11 @@ def write_staging_csvs(directory, out_dir=None, source="LAS", files=None, recurs
     out_dir = out_dir or directory
     os.makedirs(out_dir, exist_ok=True)
     log_rows, curve_rows = extract_directory(directory, source, files=files, recursive=recursive)
-    log_cols = ["UWI", "LOG_ID", "LOG_TYPE", "LOG_DATE", "RUN_NO", "TOP_DEPTH", "BASE_DEPTH", "SOURCE"]
-    curve_cols = ["UWI", "LOG_ID", "CURVE_NAME", "CURVE_DESCRIPTION", "CURVE_UNIT",
-                  "MIN_VALUE", "MAX_VALUE", "SOURCE"]
+    # target-table column names (INFORMATION_SCHEMA) so the loader auto-maps every one
+    log_cols = ["uwi", "log_id", "log_type", "run_num", "log_date", "top_depth", "base_depth",
+                "depth_ouom", "source"]
+    curve_cols = ["uwi", "log_id", "curve_id", "mnemonic", "curve_description", "curve_unit",
+                  "min_value", "max_value", "depth_ouom", "source"]
     log_path = os.path.join(out_dir, "well_log.csv")
     curve_path = os.path.join(out_dir, "well_log_curve.csv")
     with open(log_path, "w", newline="", encoding="utf-8") as fh:

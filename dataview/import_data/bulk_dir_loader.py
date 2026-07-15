@@ -47,6 +47,30 @@ _witsml = _opt_import("witsml_header_loader")
 _pdf = _opt_import("pdf_document_loader")
 _docx = _opt_import("docx_document_loader")
 _pdf_review = _opt_import("pdf_field_review")
+_gate = _opt_import("file_gate")          # content-hash file catalog / re-extract gate
+_diag = _opt_import("load_diagnostics")   # trap → explain → advise on SQL failures
+
+
+def _render_diag(exc, table=None, tb=None, sql=None):
+    """Call load_diagnostics.render() across versions. Older copies have no `tb` parameter,
+    and a TypeError here would replace the error we're trying to EXPLAIN with a worse one —
+    the reporting path must never be the thing that breaks."""
+    if _diag is None:
+        return False
+    try:
+        import inspect
+        params = inspect.signature(_diag.render).parameters
+    except Exception:
+        params = {}
+    try:
+        if "tb" in params:
+            _diag.render(exc, table=table, tb=tb)
+        else:
+            _diag.render(exc, table=table)
+        return True
+    except Exception:
+        return False                      # caller falls back to the plain st.error
+_qa = _opt_import("staging_qa")           # data-quality report over staging
 
 # which extractor owns which extension, and what it needs — so a scan that finds files
 # it cannot extract SAYS SO instead of silently skipping them.
@@ -115,10 +139,21 @@ def get_engine(server, database):
 
 
 # ── safe-delimited re-emit ────────────────────────────────────────────────────
+_repair = _opt_import("staging_repair")
+
+
 def _clean(v):
-    """Strip anything that would corrupt the delimited stream from a field value."""
+    """Strip anything that would corrupt the delimited stream, plus encoding damage that is
+    never legitimate in this data: NULL bytes, control characters, smart quotes, nbsp.
+    Type-dependent repairs happen later (see staging_repair) — here we only undo damage that
+    is wrong regardless of what column the value lands in."""
     if v is None:
         return ""
+    if _repair is not None:
+        try:
+            v = _repair.clean_text(v)
+        except Exception:
+            pass
     return v.replace(FS, "").replace(RT, " ").replace("\r", " ").replace("\n", " ")
 
 def build_safe_file(csv_path, out_path, src_name, out_cols):
@@ -136,11 +171,25 @@ def build_safe_file(csv_path, out_path, src_name, out_cols):
         idx = {}
         for j, h in enumerate(header):
             idx.setdefault(pdl._norm(h), j)          # normalized header -> position (first wins)
+
+        # A safe file whose fields are all empty loads as rows of NULLs — which then fails
+        # far away with "cannot insert NULL into 'uwi'", or worse, loads silently. Catch the
+        # header/column mismatch HERE, where it's obvious what's wrong.
+        hit = [c for c in out_cols if idx.get(pdl._norm(c), idx.get(c)) is not None]
+        if out_cols and not hit:
+            raise ValueError(
+                f"{os.path.basename(csv_path)}: none of the {len(out_cols)} staging column(s) "
+                f"match the CSV header. staging={list(out_cols)[:6]}… csv={header[:6]}… "
+                f"— the safe file would be all-empty. Re-scan so the staging shape matches "
+                f"the current extractor output.")
         n = 0
         for i, row in enumerate(rd, start=1):
             vals = [str(i), src_name]
             for c in out_cols:
-                j = idx.get(c)
+                # look up NORMALIZED both sides — the index is keyed by _norm(header), so a
+                # raw lookup silently misses whenever the CSV's casing/punctuation differs
+                # from out_cols (e.g. 'uwi' vs 'UWI'), and every field comes out empty.
+                j = idx.get(pdl._norm(c), idx.get(c))
                 vals.append(_clean(row[j]) if (j is not None and j < len(row)) else "")
             out.write(FS.join(vals) + RT)
             n += 1
@@ -315,9 +364,14 @@ def _call_extractor(fn, directory, out_dir, source, files, recursive):
     return fn(directory, **kw)
 
 
-def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\Bulk", recursive=False):
+def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\Bulk",
+                           recursive=False, force=False):
     """profile_directory using the JSON catalog when a path is set (fast), else live
-    introspection. Adds filename-based matching for dv_r_* reference tables."""
+    introspection. Adds filename-based matching for dv_r_* reference tables.
+
+    `force` — re-extract every file even if the catalog says its content is unchanged. Needed
+    whenever the EXTRACTOR changed rather than the data: the bytes are identical, so the gate
+    would otherwise (correctly) skip them."""
     import json, tempfile
     cj = _catalog_json()
     tmp = None
@@ -346,6 +400,67 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
 
     ref_tables = [t for t in cat["table_cols"] if t.lower().startswith("dv_r_")]
     tcols_map = cat["table_cols"]
+
+    # ── file gate ────────────────────────────────────────────────────────────────
+    # Catalog every candidate file (content hash behind a size+mtime pre-filter) and work out
+    # which ones actually need extracting. Unchanged, already-loaded files are skipped — the
+    # promote's NOT EXISTS guard would drop their rows anyway, so re-extracting them is pure
+    # cost. `force` overrides, for when the extractor changed rather than the data.
+    # Everything the loader can read — CSV/Excel included. They reach the scan through
+    # pdl.profile_directory rather than _glob_ext, so they were invisible to the catalog:
+    # dv_global_file_catalog claimed to track what had been loaded and silently omitted them.
+    _ALL_EXTS = [".las", ".dlis", ".lis", ".xml", ".wml", ".pdf", ".docx", ".doc", ".odt",
+                 ".csv", ".xlsx", ".xlsm", ".xltx", ".xls"]
+    skip_files, gate_dec = set(), {}
+    if _gate is not None:
+        try:
+            cand = [f for f in _glob_ext(directory, _ALL_EXTS, recursive)
+                    if not os.path.basename(f).startswith("~$")]
+            if cand and not _gate.catalog_exists(engine):
+                try:
+                    _db = engine.url.database
+                except Exception:
+                    _db = "this database"
+                raise RuntimeError(
+                    f"{_gate.CAT_SCHEMA}.{_gate.CAT_TABLE} isn't in {_db}. Files will still "
+                    f"load — they just won't be catalogued, or skipped when unchanged. Check "
+                    f"CAT_SCHEMA in file_gate.py, or point the loader at the database that "
+                    f"holds the catalog.")
+            if cand:
+                # NB: no `schema` — the file catalog lives in its own schema
+                # (catalog.GLOBAL_FILE_CATALOG), not the dataview one.
+                gate_dec = _gate.classify(engine, cand, root=directory, force=force)
+                # upsert() returns (n, note) — older copies returned a bare int. Don't let a
+                # version-skewed pair of files break a scan over a return shape.
+                _res = _gate.upsert(engine, gate_dec, root=directory)
+                _note = _res[1] if isinstance(_res, (tuple, list)) and len(_res) > 1 else None
+                keep = set(_gate.to_extract(gate_dec, force))
+                skip_files = {os.path.abspath(p) for p in gate_dec if p not in keep}
+                scan["gate"] = {"summary": _gate.summary(gate_dec),
+                                "skipped": len(skip_files), "total": len(cand),
+                                "forced": bool(force), "note": _note,
+                                "ids": {os.path.abspath(p): r["inventory_id"]
+                                        for p, r in gate_dec.items()}}
+        except Exception as e:
+            scan.setdefault("extract_errors", {})["file_gate"] = str(e)
+
+    def _ungated(files):
+        """Drop files the gate says are unchanged-and-already-loaded."""
+        return [f for f in files if os.path.abspath(f) not in skip_files]
+
+    # CSV/Excel rows arrive from pdl.profile_directory already globbed, so _ungated() can't
+    # reach them — filter the profiled rows instead, on each row's own path.
+    if skip_files and scan.get("rows"):
+        _kept = []
+        for _r in scan["rows"]:
+            _p = _r.get("path")
+            if _p and os.path.abspath(_p) in skip_files:
+                scan["gate"]["skipped_rows"] = scan["gate"].get("skipped_rows", 0) + 1
+                continue
+            _kept.append(_r)
+        scan["rows"] = _kept
+        scan["n_files"] = len(_kept)
+
     for r in scan.get("rows", []):
         m, score = _match_reference_by_name(r["file"], ref_tables, r.get("cols", []), tcols_map)
         if m and (not r.get("table") or r["table"].upper() != m.upper()):
@@ -364,7 +479,7 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
 
     # auto-detect LAS files → two rows (dv_well_log, dv_well_log_curve), staged separately
     import csv as _csv
-    las_files = _glob_ext(directory, [".las"], recursive)
+    las_files = _ungated(_glob_ext(directory, [".las"], recursive))
     if las_files and _las is not None:
         try:
             las_out = os.path.join(bulk_dir, "_las_extract")     # accessible to bcp, unlike os temp
@@ -390,7 +505,7 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
 
     # DLIS / LIS → dv_well_log + dv_well_log_curve (like LAS, separate _<fmt> staging)
     def _detect_logfmt(ext, mod, tag):
-        files = _glob_ext(directory, [ext], recursive)
+        files = _ungated(_glob_ext(directory, [ext], recursive))
         if not files or mod is None:
             return
         try:
@@ -417,7 +532,7 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
     _detect_logfmt(".lis", _lis, "lis")
 
     # WITSML → multiple targets depending on object type (log/trajectory/mudlog)
-    wml_files = _glob_ext(directory, [".xml", ".wml"], recursive)
+    wml_files = _ungated(_glob_ext(directory, [".xml", ".wml"], recursive))
     if wml_files and _witsml is not None:
         try:
             out = os.path.join(bulk_dir, "_witsml_extract"); os.makedirs(out, exist_ok=True)
@@ -451,7 +566,7 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
             scan.setdefault("extract_errors", {})["witsml"] = str(e)
 
     # PDF documents → many targets depending on doc type (scout/eow/survey/pressure/welltest/casing/petro)
-    pdf_files = _glob_ext(directory, [".pdf"], recursive)
+    pdf_files = _ungated(_glob_ext(directory, [".pdf"], recursive))
     if pdf_files and _pdf is not None:
         try:
             out = os.path.join(bulk_dir, "_pdf_extract"); os.makedirs(out, exist_ok=True)
@@ -483,7 +598,7 @@ def profile_directory_live(directory, engine, schema="dataview", bulk_dir=r"C:\B
 
     # Word documents (final well reports, completion/geological summaries) → well, tops,
     # log + curves, core, survey. Same review → map → promote path as the PDF suite.
-    docx_files = _glob_ext(directory, [".docx", ".doc", ".odt"], recursive)
+    docx_files = _ungated(_glob_ext(directory, [".docx", ".doc", ".odt"], recursive))
     docx_files = [f for f in docx_files if not os.path.basename(f).startswith("~$")]
     if docx_files and _docx is not None:
         try:
@@ -800,9 +915,44 @@ def build_map_review(engine, scan_rows, schema="dataview"):
             else:
                 status = "skip"
             rows.append({"source": c, "target": tgt, "status": status,
-                         "fk": (fk[1] if fk else "")})
+                         "fk": (fk[1] if fk else ""), "note": ""})
+
+        # ── only one thing can fill a column ────────────────────────────────────────
+        # Two sources land on the same target whenever an exact name match coexists with a
+        # learned synonym (`mnemonic` matches directly AND dv_column_map remembers
+        # CURVE_NAME→mnemonic from when the extractor emitted that name). The loader already
+        # knows which claim is stronger, so decide here rather than fail at promote.
+        _PRI = {"exact": 0, "confirmed": 1, "guess": 2}
+        best = {}
+        for x in rows:
+            if x["status"] == "skip":
+                continue
+            _tc = str(x["target"]).lower()      # target COLUMN — never reuse `t`, which is
+            if _tc not in best:                 # the target TABLE for this whole loop body
+                best[_tc] = x
+                continue
+            cur = best[_tc]
+            win, lose = ((x, cur) if _PRI[x["status"]] < _PRI[cur["status"]] else (cur, x))
+            best[_tc] = win
+            lose["status"] = "skip"
+            lose["target"] = "— skip —"
+            lose["note"] = f"`{win['source']}` ({win['status']}) already fills {_tc}"
+
         cmap = {x["source"]: x["target"] for x in rows if x["status"] != "skip"}
-        funcs = _funcs(engine, tu)
+
+        # A derived rule is only for a column NO source can fill. Once the extractors emit
+        # station_id / survey_id / mnemonic directly, yesterday's rules are redundant — drop
+        # them rather than collide. (This is why rules that were right this morning are wrong
+        # this afternoon: the extractor changed under them.)
+        _covered = {str(v).lower() for v in cmap.values()}
+        _all_funcs = _funcs(engine, tu)
+        funcs, dropped_funcs = [], []
+        for f in _all_funcs:
+            ft = str(f.get("target", "")).lower()
+            if ft and ft in _covered:
+                dropped_funcs.append(ft)
+            else:
+                funcs.append(f)
         req_missing = _required_missing(engine, tu, cmap, funcs, schema)
         suggested = _suggest_functions(engine, tu, src_cols, cmap, funcs, schema)
         settled = ("exact", "confirmed", "skip")   # skip = a reviewed decision (no DB home)
@@ -813,6 +963,8 @@ def build_map_review(engine, scan_rows, schema="dataview"):
                        "src_cols": src_cols, "db_cols": db_cols, "rows": rows,
                        "funcs": funcs, "required_missing": req_missing, "suggested_funcs": suggested,
                        "auto": auto,
+                       "dropped_funcs": dropped_funcs,
+                       "demoted": [x for x in rows if x.get("note")],
                        "exact": sum(1 for x in rows if x["status"] == "exact"),
                        "confirmed": sum(1 for x in rows if x["status"] == "confirmed"),
                        "exceptions": [x["source"] for x in rows if x["status"] not in settled],
@@ -1091,14 +1243,15 @@ def render_match_map(ss, server, database, schema="dataview"):
 
     review_needed = [r for r in review if r["skey"] not in auto_set]
     if not review_needed:
-        st.success(f"All {len(review)} tables auto-mapped (exact matches). "
-                   "Nothing to review — proceed to FK analysis (Phase 3).")
-        return
+        st.success(f"All {len(review)} tables auto-mapped (exact matches) — nothing *needs* "
+                   "review. Open a table below to change a mapping anyway, then Save.")
+    # Render the editor for EVERY table, not just the ones needing review: an exact match is
+    # a good default, not a decision the operator is stuck with. Auto tables stay collapsed.
 
     with st.form("bdl_phase2"):
         editors = {}
         fn_editors = {}
-        for r in review_needed:
+        for r in review:
             n_exc = len(r["exceptions"]); flag = "⚠" if (n_exc or r["required_missing"]) else "✅"
             settled = ("exact", "confirmed", "skip")
             slabel = r["target"] if r["stg_table"] == stg_name(r["target"].upper()) \
@@ -1109,6 +1262,18 @@ def render_match_map(ss, server, database, schema="dataview"):
                     st.warning("Required, not covered by map/stamp/function: "
                                + ", ".join(r["required_missing"])
                                + ".  Suggested rules are pre-filled below — review and Save, or edit.")
+                # Say what was auto-resolved. An automatic decision you can't see is
+                # indistinguishable from a bug — and this one silently changes what loads.
+                if r.get("demoted"):
+                    st.info("Two things wanted the same column, so the stronger claim won:\n\n"
+                            + "\n".join(f"- `{x['source']}` → **skipped** — {x['note']}"
+                                        for x in r["demoted"])
+                            + "\n\nOverride below if the wrong one was kept.")
+                if r.get("dropped_funcs"):
+                    st.info("Derived rule(s) dropped — a source column now supplies "
+                            + ", ".join(f"**{c}**" for c in r["dropped_funcs"])
+                            + " directly, so the rule is redundant. (Rules made before the "
+                              "extractors emitted these columns are no longer needed.)")
                 if r["suggested_funcs"]:
                     st.caption("💡 suggested: " + " · ".join(
                         f"`{p['target']} = {p['fn']}({p['arg']})`  ({p['why']})"
@@ -1658,6 +1823,43 @@ def _fn_expr_sql(rule, cmap_inv, is_ident_of):
     return "NULL", None
 
 
+def _table_col_lens(engine, table, schema="dataview"):
+    """{col_lower: max_len or None} — what a value has to fit in. Truncation is the failure
+    the operator can't see coming from the CSV alone."""
+    import pandas as pd
+    from sqlalchemy import text
+    try:
+        df = pd.read_sql(text(
+            "SELECT COLUMN_NAME n, CHARACTER_MAXIMUM_LENGTH L FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA=:s AND TABLE_NAME=:tb"),
+            engine, params={"s": schema, "tb": table.lower()})
+        out = {}
+        for r in df.itertuples():
+            v = getattr(r, "L", None)
+            try:
+                v = int(v) if v is not None and int(v) > 0 else None
+            except (TypeError, ValueError):
+                v = None
+            out[str(r.n).lower()] = v
+        return out
+    except Exception:
+        return {}
+
+
+def _table_notnull(engine, table, schema="dataview"):
+    """{col_lower} that are NOT NULL — a blank here is a promote failure, not a warning."""
+    import pandas as pd
+    from sqlalchemy import text
+    try:
+        df = pd.read_sql(text(
+            "SELECT COLUMN_NAME n FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA=:s AND TABLE_NAME=:tb AND IS_NULLABLE='NO'"),
+            engine, params={"s": schema, "tb": table.lower()})
+        return {str(r.n).lower() for r in df.itertuples()}
+    except Exception:
+        return set()
+
+
 def _table_col_types(engine, table, schema="dataview"):
     """{col_lower: sql_type} for a table's columns, from INFORMATION_SCHEMA."""
     import pandas as pd
@@ -1699,11 +1901,13 @@ def build_promote_sql(engine, target, cmap, functions, schema="dataview", stg=No
     coltypes = _table_col_types(engine, target, schema)
 
     select_cols, insert_cols, collisions = [], [], []
-    seen_targets = set()
-    def _add(dbl, expr):
+    seen_targets = {}                    # target col -> what first claimed it
+    def _add(dbl, expr, who=None):
         if dbl in seen_targets:
-            collisions.append(dbl); return
-        seen_targets.add(dbl); insert_cols.append(dbl); select_cols.append(f"{expr} AS [{dbl}]")
+            collisions.append((dbl, seen_targets[dbl], who or "a derived rule"))
+            return
+        seen_targets[dbl] = who or "a derived rule"
+        insert_cols.append(dbl); select_cols.append(f"{expr} AS [{dbl}]")
     # 1) mapped columns (with transforms)
     for src, db in cmap.items():
         dbl = db.lower()
@@ -1716,16 +1920,17 @@ def build_promote_sql(engine, target, cmap, functions, schema="dataview", stg=No
             expr = f"REPLACE(REPLACE(REPLACE(LTRIM(RTRIM([s].[{src}])),'-',''),' ',''),'.','')"
         else:
             expr = _typed(f"NULLIF(LTRIM(RTRIM([s].[{src}])),'')", coltypes.get(dbl, ""))
-        _add(dbl, expr)
+        _add(dbl, expr, f"source column `{src}` (① Map columns)")
     # 2) function-derived columns
     for f in (functions or []):
         tgt = str(f.get("target", "")).lower()
         if not tgt or tgt not in tcols:
             continue
         expr, _ = _fn_expr_sql(f, cmap_inv, ident)
+        _who = f"derived rule `{f.get('fn', '?')}({f.get('arg', '')})` (④ Derived columns)"
         _add(tgt, _typed(expr, coltypes.get(tgt, "")) if coltypes.get(tgt) in
              ("date", "datetime", "datetime2", "int", "bigint", "smallint", "numeric", "decimal",
-              "float") else expr)
+              "float") else expr, _who)
     # 3) audit stamp (only where present and not already supplied)
     dbcols = _table_cols_db(engine, target, schema)
     for c, v in (("active_ind", "'Y'"), ("row_created_by", "'DATA_LOADER'"),
@@ -1734,9 +1939,16 @@ def build_promote_sql(engine, target, cmap, functions, schema="dataview", stg=No
             _add(c, v)
 
     if collisions:
-        dupes = ", ".join(sorted(set(collisions)))
-        raise ValueError(f"Two source columns map to the same DB column(s): {dupes}. "
-                         f"Fix in Phase 2 — skip or remap one of them.")
+        # Name BOTH claimants. "survey_id is doubled" makes the operator hunt; "SRVY_ID and
+        # a concat rule both fill survey_id" says what to delete.
+        lines = [f"**{dbl}** ← {first}  ✗ and ✗  {second}"
+                 for dbl, first, second in collisions]
+        raise ValueError(
+            "Two things fill the same column — only one can:\n\n"
+            + "\n\n".join(lines)
+            + "\n\nKeep whichever actually holds the value and remove the other: set the "
+              "source column to `— skip —` in ① Map columns, or delete the rule in "
+              "④ Derived columns. A rule is only needed when NO source column has the data.")
 
     pk = _table_pk_live(engine, target, schema)
     pk_in = [p for p in (pk or []) if p in insert_cols]
@@ -1776,6 +1988,156 @@ def render_promote(ss, server, database, schema="dataview"):
     funcs_all = ss.get("bdl_functions", {})
     eng = get_engine(server, database)
 
+    # ── data quality, before anything is promoted ────────────────────────────────────
+    # The rows are already in SQL Server as nvarchar, so profiling them is one set-based
+    # query per staging table. This is the last point where a bad value is still cheap:
+    # after promote it's either a hard error or — worse — a silent NULL in your vault.
+    if _qa is not None:
+        meta_q = ss.get("bdl_mapmeta", {})
+        if st.button("🔎 Check data quality (staging)",
+                     help="Profiles every mapped column against its target column's real type "
+                          "and width. Nothing is changed — it reports what promote would do."):
+            rep = {}
+            for skey, cmap in maps.items():
+                target, stg = meta_q.get(skey, (skey, skey))
+                try:
+                    types = _table_col_types(eng, target, schema)
+                    lens = _table_col_lens(eng, target, schema)
+                    nn = _table_notnull(eng, target, schema)
+                    rep[skey] = {"target": target,
+                                 "rows": _qa.profile(eng, stg, cmap, types, lens, nn)}
+                except Exception as e:
+                    rep[skey] = {"target": target, "error": str(e)}
+            ss["bdl_qa"] = rep
+
+        qa = ss.get("bdl_qa")
+        if qa:
+            tot = {"flag": 0, "fix": 0, "ok": 0}
+            for v in qa.values():
+                for r in (v.get("rows") or []):
+                    tot[r["level"]] += 1
+            head = f"🔴 {tot['flag']} flag · 🟡 {tot['fix']} fix · ✅ {tot['ok']} ok"
+            with st.expander(f"Data quality — {head}", expanded=bool(tot["flag"])):
+                st.caption("Checked against each target column's real type and width. "
+                           "🔴 = would fail or silently lose data · 🟡 = repairable · "
+                           "advisory only, nothing is changed here.")
+                for skey, v in qa.items():
+                    if v.get("error"):
+                        st.caption(f"{v['target']}: could not profile — {v['error'][:120]}")
+                        continue
+                    bad = [r for r in v["rows"] if r["level"] != "ok"]
+                    if not bad:
+                        st.caption(f"✅ **{v['target']}** — nothing to flag")
+                        continue
+                    st.markdown(f"**{v['target']}**")
+                    st.dataframe(pd.DataFrame([{
+                        "": {"flag": "🔴", "fix": "🟡", "ok": "✅"}[r["level"]],
+                        "source": r["source"], "→ column": r["target"], "type": r["type"],
+                        "rows": r["rows"], "blank": r["blank"],
+                        "what": "; ".join(r["issues"])} for r in bad]),
+                        hide_index=True, use_container_width=True)
+                if tot["flag"]:
+                    st.warning("🔴 items will fail at promote, or load as NULL without an error. "
+                               "Fix the source, or map the column elsewhere, before promoting.")
+
+        # ── repair what is deterministically repairable ─────────────────────────────
+        if _repair is not None and ss.get("bdl_qa"):
+            rc1, rc2 = st.columns([1, 3])
+            if rc1.button("🔧 Plan repairs",
+                          help="Work out which staged values can be repaired without guessing "
+                               "— fractions, units, thousands separators. Nothing changes yet."):
+                plan_all, refuse_all = {}, {}
+                for skey, cmap in maps.items():
+                    target, stg = meta_q.get(skey, (skey, skey))
+                    try:
+                        types = _table_col_types(eng, target, schema)
+                        fx, rf = _repair.plan(eng, stg, cmap, types)
+                        if fx: plan_all[skey] = (stg, fx)
+                        if rf: refuse_all[skey] = rf
+                    except Exception as e:
+                        st.caption(f"({target}: repair plan failed — {str(e)[:90]})")
+                ss["bdl_repair"] = plan_all
+                ss["bdl_refuse"] = refuse_all
+
+            rp, rf = ss.get("bdl_repair") or {}, ss.get("bdl_refuse") or {}
+            if rp or rf:
+                n_fix = sum(len(v[1]) for v in rp.values())
+                n_ref = sum(len(v) for v in rf.values())
+                rc2.caption(f"{n_fix} value(s) repairable · {n_ref} refused")
+                if rp:
+                    with st.expander(f"🔧 {n_fix} value(s) can be repaired", expanded=True):
+                        for skey, (stg, fx) in rp.items():
+                            st.markdown(f"**{meta_q.get(skey, (skey,))[0]}**")
+                            st.dataframe(pd.DataFrame(fx[:40])[["column", "old", "new", "why"]],
+                                         hide_index=True, use_container_width=True)
+                            if len(fx) > 40:
+                                st.caption(f"…and {len(fx) - 40} more")
+                        if st.button("Apply repairs to staging", type="primary"):
+                            n = 0
+                            for skey, (stg, fx) in rp.items():
+                                n += _repair.apply(eng, stg, fx)
+                            ss.pop("bdl_repair", None); ss.pop("bdl_qa", None)
+                            st.success(f"Repaired {n} value(s) in staging. Re-run the data "
+                                       f"quality check to confirm.")
+                            st.rerun()
+                if rf:
+                    with st.expander(f"🚫 {n_ref} value(s) REFUSED — cannot be repaired",
+                                     expanded=True):
+                        st.error("These can't be recovered from what's on disk. Repairing them "
+                                 "would invent data that looks right and isn't — so the loader "
+                                 "won't. Re-export the source with the column formatted as "
+                                 "**text**, or let them load as NULL.")
+                        for skey, items in rf.items():
+                            st.markdown(f"**{meta_q.get(skey, (skey,))[0]}**")
+                            st.dataframe(pd.DataFrame(items[:40]), hide_index=True,
+                                         use_container_width=True)
+
+        # ── date formats ────────────────────────────────────────────────────────────
+        # 03/04/2021 is 3 April or 4 March depending on who exported it; SQL Server decides
+        # by the session's DATEFORMAT, which knows nothing about the source. Wrong is SILENT
+        # here — every row loads and some dates are simply wrong — so infer per column from
+        # its own values, and where the column genuinely can't say, refuse rather than pick.
+        if _repair is not None and ss.get("bdl_qa"):
+            if st.button("📅 Check date formats",
+                         help="Infers each date column's format from its own values."):
+                found = []
+                for skey, cmap in maps.items():
+                    target, stg = meta_q.get(skey, (skey, skey))
+                    try:
+                        types = _table_col_types(eng, target, schema)
+                        with eng.connect() as _cx:
+                            for src, tgt in cmap.items():
+                                if (types.get(str(tgt).lower()) or "") not in (
+                                        "date", "datetime", "datetime2", "smalldatetime"):
+                                    continue
+                                vals = [r[0] for r in _cx.execute(text(
+                                    f"SELECT TOP 500 [{src}] FROM {stg} "
+                                    f"WHERE NULLIF(LTRIM(RTRIM([{src}])),'') IS NOT NULL"))]
+                                fmt, conf, why = _repair.detect_date_format(vals)
+                                found.append({"table": target, "column": src, "→": tgt,
+                                              "format": fmt or "—", "confidence": conf,
+                                              "why": why})
+                    except Exception as e:
+                        st.caption(f"({target}: date check failed — {str(e)[:80]})")
+                ss["bdl_dates"] = found
+
+            dts = ss.get("bdl_dates")
+            if dts:
+                risky = [d for d in dts if d["confidence"] in ("ambiguous", "conflict")]
+                with st.expander(f"📅 Date formats — {len(dts)} column(s), {len(risky)} risky",
+                                 expanded=bool(risky)):
+                    st.dataframe(pd.DataFrame(dts), hide_index=True, use_container_width=True)
+                    if risky:
+                        st.error("**Ambiguous / conflicting columns can't be inferred.** SQL "
+                                 "Server will apply the session's DATEFORMAT, which has nothing "
+                                 "to do with where the data came from — the rows will load and "
+                                 "some dates will simply be wrong, with no error at all. "
+                                 "Re-export these as ISO (yyyy-mm-dd), or confirm the format "
+                                 "with whoever produced the file.")
+                    else:
+                        st.success("Every date column's format is determined by its own values "
+                                   "— nothing is being guessed.")
+
     if st.button("Preview promote", type="primary"):
         import time
         prev = []
@@ -1790,6 +2152,11 @@ def render_promote(ss, server, database, schema="dataview"):
         for skey in skeys:
             target, stg_tbl = meta.get(skey, (skey, skey))
             try:
+                if not _table_cols_db(eng, target, schema):
+                    raise ValueError(
+                        f"'{schema}.{target}' is not a table — this staged file is mapped to "
+                        f"something that looks like a column name. Correct its → table in "
+                        f"Files → tables, or ↻ Reset run to clear stale scan state.")
                 tb = time.perf_counter()
                 sql, cols, pk = build_promote_sql(eng, target, maps[skey], funcs_all.get(skey, []),
                                                   schema, stg=stg_tbl, parsed=parsed)
@@ -1830,23 +2197,104 @@ def render_promote(ss, server, database, schema="dataview"):
 
         if any(p["err"] for p in prev):
             st.error("Fix the 🔴 tables before promoting.")
-        elif st.button("🚀 Promote all (per-table commit)", type="primary"):
-            import time
-            log = []
-            for p in prev:
-                label = p["table"]                             # display only (may contain ⟵)
-                t = p.get("target", p["table"])                # real table name for SQL
-                try:
-                    ti = time.perf_counter()
-                    with eng.begin() as cx:
-                        before = cx.execute(text(f"SELECT COUNT(*) FROM {schema}.{t.lower()}")).scalar()
-                        cx.execute(text(p["sql"]))
-                        after = cx.execute(text(f"SELECT COUNT(*) FROM {schema}.{t.lower()}")).scalar()
-                    log.append((label, after - before, round(time.perf_counter() - ti, 2), None))
-                except Exception as e:
-                    log.append((label, 0, 0, str(e)))
-                    break                                          # stop on error
-            ss["bdl_promote_log"] = log
+        else:
+            dc1, dc2 = st.columns([1, 1])
+            # A TRUE dry run: execute the real promote SQL, in promote order, inside ONE
+            # transaction, then roll it back. Exact by construction — it surfaces truncation,
+            # NULLs, FK conflicts and duplicate keys with the server's own message, before
+            # anything half-commits. One transaction (not per-table) so children see their
+            # parents' rows, exactly as they would in the real run.
+            if dc1.button("🧪 Dry run (rollback)",
+                          help="Runs the real INSERTs and rolls them back — nothing is written. "
+                               "Shows what would fail, and what would load."):
+                res, failed, p = [], None, None
+                with eng.connect() as cx:
+                    tr = cx.begin()
+                    try:
+                        for p in prev:
+                            t = p.get("target", p["table"])
+                            # A target that isn't a table means the mapping is wrong, not the
+                            # SQL. Say so HERE — otherwise it surfaces as SQL Server's
+                            # "Invalid object name 'dataview.uwi'" with no hint that a scan row
+                            # claimed a COLUMN as its table.
+                            if not _table_cols_db(eng, t, schema):
+                                raise ValueError(
+                                    f"'{schema}.{t}' is not a table. The staged entry "
+                                    f"'{p.get('table')}' is mapped to a target called '{t}' — "
+                                    f"that looks like a COLUMN name, not a table. Fix the "
+                                    f"→ table for that file in Files → tables, or ↻ Reset run "
+                                    f"if it's stale state from an earlier scan.")
+                            before = cx.execute(text(
+                                f"SELECT COUNT(*) FROM {schema}.{t.lower()}")).scalar()
+                            cx.execute(text(p["sql"]))
+                            after = cx.execute(text(
+                                f"SELECT COUNT(*) FROM {schema}.{t.lower()}")).scalar()
+                            res.append((p["table"], after - before, None))
+                    except Exception as e:
+                        import traceback as _tb
+                        failed = (p["table"] if p else "?", e, _tb.format_exc(),
+                                  (p or {}).get("sql", ""))
+                        res.append((p["table"] if p else "?", 0, str(e)))
+                    finally:
+                        tr.rollback()                       # never keep anything
+                ss["bdl_dryrun"] = res
+                ss["bdl_dryrun_exc"] = failed
+
+            dry = ss.get("bdl_dryrun")
+            if dry:
+                st.markdown("**Dry run** — nothing was written:")
+                for t, n, err in dry:
+                    if err:
+                        exc = ss.get("bdl_dryrun_exc")
+                        shown = False
+                        if exc and exc[0] == t:
+                            shown = _render_diag(exc[1], table=t,
+                                                 tb=(exc[2] if len(exc) > 2 else None))
+                            if shown and len(exc) > 3 and exc[3]:
+                                with st.expander("The SQL that would fail"):
+                                    st.code(exc[3], language="sql")
+                        if not shown:
+                            st.error(f"{t}: would FAIL — {err}")
+                    else:
+                        st.caption(f"✅ {t}: would insert {n} row(s)")
+                if not any(e for _, _, e in dry):
+                    st.success(f"Dry run clean — {sum(n for _, n, _ in dry)} row(s) would be "
+                               f"inserted across {len(dry)} table(s). Safe to promote.")
+
+            if dc2.button("🚀 Promote all (per-table commit)", type="primary"):
+                import time
+                log = []
+                # Server clock, not the client's — row_created_date is SYSUTCDATETIME(), so the
+                # "did this run write it?" comparison must use the same clock.
+                with eng.connect() as cx:
+                    ss["bdl_promote_ts"] = cx.execute(text("SELECT SYSUTCDATETIME()")).scalar()
+                for p in prev:
+                    label = p["table"]                             # display only (may contain ⟵)
+                    t = p.get("target", p["table"])                # real table name for SQL
+                    try:
+                        ti = time.perf_counter()
+                        with eng.begin() as cx:
+                            before = cx.execute(text(f"SELECT COUNT(*) FROM {schema}.{t.lower()}")).scalar()
+                            cx.execute(text(p["sql"]))
+                            after = cx.execute(text(f"SELECT COUNT(*) FROM {schema}.{t.lower()}")).scalar()
+                        log.append((label, after - before, round(time.perf_counter() - ti, 2), None))
+                    except Exception as e:
+                        import traceback as _tb
+                        log.append((label, 0, 0, str(e)))
+                        # capture the stack HERE — format_exc() is empty once we've left the
+                        # except block, and this is rendered on a later rerun
+                        ss["bdl_promote_exc"] = (label, e, _tb.format_exc(), p.get("sql", ""))
+                        break                                          # stop on error
+                ss["bdl_promote_log"] = log
+                # Close the loop: the files that fed this promote are now loaded, so a later scan
+                # can skip them. Only on a clean run — a partial promote must stay re-runnable.
+                if _gate is not None and not any(r[3] for r in log):
+                    ids = ((ss.get("bdl_scan") or {}).get("gate") or {}).get("ids") or {}
+                    if ids:
+                        try:
+                            _gate.mark_loaded(eng, list(ids.values()))
+                        except Exception as e:
+                            st.caption(f"(file catalog not updated: {e})")
 
     log = ss.get("bdl_promote_log")
     if log:
@@ -1854,18 +2302,35 @@ def render_promote(ss, server, database, schema="dataview"):
         for row in log:
             t, n, secs, err = row
             if err:
-                st.error(f"{t}: FAILED — {err}  (stopped here; earlier tables committed)")
+                # A wall of generated SQL is not a diagnosis. Explain it in loader terms —
+                # which column, which rule, what to change — and tuck the raw text away.
+                exc = ss.get("bdl_promote_exc")
+                shown = False
+                if exc and exc[0] == t:
+                    shown = _render_diag(exc[1], table=t,
+                                         tb=(exc[2] if len(exc) > 2 else None))
+                    if shown and len(exc) > 3 and exc[3]:
+                        with st.expander("The SQL that failed"):
+                            st.code(exc[3], language="sql")
+                    if shown:
+                        st.caption("Stopped here; earlier tables were committed.")
+                if not shown:
+                    st.error(f"{t}: FAILED — {err}  (stopped here; earlier tables committed)")
             else:
                 st.success(f"{t}: +{n} rows  ({secs}s)")
         if not any(r[3] for r in log):
-            st.balloons()
             st.success("Promote complete — all tables loaded into dataview.")
 
 
-def verify_promote(engine, maps, schema="dataview", staged=None, meta=None):
+def verify_promote(engine, maps, schema="dataview", staged=None, meta=None, since=None):
     """Reconcile staged vs loaded, per table. Matches staged rows to the target on the PK
     columns that exist in staging (de-sep applied to identifier keys); PK columns generated
-    at promote (curve_id, station_id) are dropped from the match, marking that row approximate."""
+    at promote (curve_id, station_id) are dropped from the match, marking that row approximate.
+
+    `since` — a UTC timestamp captured just before the promote ran. Rows whose
+    row_created_date >= since were inserted BY THAT RUN. This is read from the database, not
+    from session state, so it stays true across restarts: "present" alone can't tell a fresh
+    load from a NOT EXISTS-skipped re-run."""
     from sqlalchemy import text
     meta = meta or {}
     out = []
@@ -1895,8 +2360,27 @@ def verify_promote(engine, maps, schema="dataview", staged=None, meta=None):
                 err = None
             except Exception as e:
                 staged_n = dv_n = present = None; err = str(e)
+
+            # row_created_date evidence, straight from the target: when were the matched rows
+            # actually written, and how many of them by THIS run?
+            loaded_at, by, fresh = None, None, None
+            if conds and not err:
+                j = (f"FROM {stg} s JOIN {schema}.{target.lower()} d ON "
+                     f"{' AND '.join(conds)}")
+                try:
+                    r = cx.execute(text(
+                        f"SELECT MAX(d.row_created_date), MAX(d.row_created_by) {j}")).first()
+                    loaded_at, by = (r[0], r[1]) if r else (None, None)
+                    if since is not None:
+                        fresh = cx.execute(text(
+                            f"SELECT COUNT(*) {j} AND d.row_created_date >= :since"),
+                            {"since": since}).scalar()
+                except Exception:
+                    pass                                   # table may lack the audit columns
+
             out.append({"table": target, "staged": staged_n, "dataview": dv_n,
                         "present": present, "exact": mapped_all,
+                        "loaded_at": loaded_at, "loaded_by": by, "fresh": fresh,
                         "missing": (staged_n - present) if (present is not None and staged_n is not None) else None,
                         "err": err})
     return out
@@ -1915,7 +2399,8 @@ def render_verify(ss, server, database, schema="dataview"):
 
     if st.button("Verify load", type="primary"):
         eng = get_engine(server, database)
-        res = verify_promote(eng, maps, schema, ss.get("bdl_staged"), ss.get("bdl_mapmeta"))
+        res = verify_promote(eng, maps, schema, ss.get("bdl_staged"), ss.get("bdl_mapmeta"),
+                             since=ss.get("bdl_promote_ts"))
         by_t = {r["table"]: r for r in res}
         ss["bdl_verify"] = [by_t[t] for t in order if t in by_t] + \
                            [r for r in res if r["table"] not in order]
@@ -1928,16 +2413,51 @@ def render_verify(ss, server, database, schema="dataview"):
         if r["missing"] is None: return "—"
         if r["missing"] == 0: return "✅ OK" if r["exact"] else "✅ ~approx"
         return "🔴 CHECK"
+
+    # "missing = 0" only says the rows ARE there — not that THIS run put them there. The
+    # promote is NOT EXISTS-guarded, so re-running the same files inserts nothing and would
+    # still verify clean. row_created_date on the matched target rows settles it, and unlike
+    # a session counter it's read from the database, so it survives a restart.
+    def inserted(r):
+        if r.get("fresh") is None:
+            return "—"
+        return f"+{r['fresh']}" if r["fresh"] else "0 (already there)"
+
+    def when(r):
+        t = r.get("loaded_at")
+        return t.strftime("%Y-%m-%d %H:%M:%S") if t else "—"
+
     st.dataframe(pd.DataFrame([{
-        "table": r["table"], "staged": r["staged"], "in dataview": r["dataview"],
-        "staged present": r["present"], "missing": r["missing"], "status": status(r)}
+        "table": r["table"], "staged": r["staged"], "inserted this run": inserted(r),
+        "row_created_date": when(r), "by": r.get("loaded_by") or "—",
+        "in dataview": r["dataview"], "staged present": r["present"],
+        "missing": r["missing"], "status": status(r)}
         for r in ver]), hide_index=True, use_container_width=True)
+    st.caption("**staged** = rows this run put in staging · **inserted this run** = matched "
+               "target rows whose `row_created_date` is at/after this promote started — read "
+               "from the database, so `0 (already there)` means the rows pre-existed and the "
+               "NOT EXISTS guard skipped them (a clean re-run, not a failure) · "
+               "**row_created_date** = when those rows were actually written · "
+               "**in dataview** = COUNT(*) of the whole target table, all loads ever · "
+               "**missing** = staged − present; 0 is the pass condition.")
     for r in ver:
         if r["err"]:
             st.error(f"{r['table']}: {r['err']}")
     bad = [r for r in ver if r["missing"] not in (0, None)]
     if not bad and not any(r["err"] for r in ver):
-        st.success("All staged rows are present in dataview — load verified complete.")
+        fresh = [r.get("fresh") for r in ver if r.get("fresh") is not None]
+        n_new = sum(fresh)
+        if not fresh:
+            st.success("All staged rows are present in dataview — load verified complete. "
+                       "(Promote wasn't run in this session, so 'inserted this run' is unknown — "
+                       "check **row_created_date** above for when the rows were written.)")
+        elif n_new:
+            st.success(f"All staged rows are present in dataview — load verified complete: "
+                       f"**{n_new} row(s) written by this run**, confirmed by row_created_date.")
+        else:
+            st.info("All staged rows are present in dataview — but **this run wrote nothing**. "
+                    "Every row already existed (row_created_date pre-dates this promote) and the "
+                    "NOT EXISTS guard skipped them. That's a clean re-run, not a new load.")
     elif bad:
         st.warning("Not fully loaded: " + ", ".join(f"{r['table']} (−{r['missing']})" for r in bad)
                    + ". Re-run Promote (idempotent) or check the mapping.")
@@ -1947,7 +2467,7 @@ def run():
     import pandas as pd
     ss = st.session_state
     hc1, hc2 = st.columns([4, 1])
-    hc1.header("Well File Loader")
+    hc1.header("Directory Loader")
     if hc2.button("↻ Reset run", help="Clear scan, mappings and staged state and start over "
                                        "(keeps server/database/paths)"):
         keep = {k: ss[k] for k in ("bdl_server", "bdl_db", "bdl_dir", "bdl_cat", "bdl_bulk",
@@ -1956,14 +2476,24 @@ def run():
             del ss[k]
         ss.update(keep)
         st.rerun()
-    st.caption("Scan a directory of well files — LAS · DLIS · LIS · WITSML · PDF · Word — extract them to staging, then map → FK → promote.  (CSV / Excel go through the tabular loader.)")
+    st.caption("Scan a directory — CSV · Excel · LAS · DLIS · LIS · WITSML · PDF · Word — "
+               "extract to staging, then map → FK → check → dry run → promote → verify. "
+               "Excel workbooks are exploded to one CSV per sheet. For the per-table flow "
+               "with inline value repair, use ⇄ (the tabular loader) above.")
 
     c1, c2 = st.columns(2)
     server = c1.text_input("Server", value=ss.get("bdl_server", r"localhost\SQLEXPRESS"))
     database = c2.text_input("Database", value=ss.get("bdl_db", "DataView_Demo"))
-    directory = st.text_input("Directory of well files (LAS / DLIS / LIS / WITSML / PDF / Word)",
+    directory = st.text_input("Directory (CSV / Excel / LAS / DLIS / LIS / WITSML / PDF / Word)",
                               value=ss.get("bdl_dir", ""))
     recursive = st.checkbox("Include subdirectories (recursive scan)", value=ss.get("bdl_recursive", False))
+    force = st.checkbox("Force re-extract (ignore the file catalog)",
+                        value=ss.get("bdl_force", False),
+                        help="Unchanged files are normally skipped — their content hash already "
+                             "matches dv_global_file_catalog and their rows are loaded. Tick this "
+                             "when the EXTRACTOR changed rather than the data: the bytes are "
+                             "identical, so the gate would skip files that now extract differently.")
+    ss["bdl_force"] = force
     catalog = st.text_input("FK catalog JSON (fast; blank = introspect live)",
                             value=ss.get("bdl_cat", r"dataview\schema_registry\dataview_fk_catalog.json"))
     bulk_dir = st.text_input("Bulk staging folder (safe files kept here)", value=ss.get("bdl_bulk", r"C:\Bulk"))
@@ -1974,7 +2504,8 @@ def run():
     if st.button("Scan directory", type="primary") and directory:
         try:
             eng = get_engine(server, database)
-            ss["bdl_scan"] = profile_directory_live(directory, eng, schema, bulk_dir, recursive)  # catalog from live server
+            ss["bdl_scan"] = profile_directory_live(directory, eng, schema, bulk_dir, recursive,
+                                                    force=force)  # catalog from live server
             ss.pop("bdl_uwi_files", None)                     # re-inspect UWIs for the new scan
         except Exception as e:
             st.error(f"Scan failed: {e}")
@@ -1984,6 +2515,23 @@ def run():
         return
 
     # surface extractor availability + any extraction errors (so nothing fails silently)
+    # what the file catalog decided — a skip you can't see is indistinguishable from a bug
+    g = scan.get("gate")
+    if g:
+        s = g.get("summary") or {}
+        bits = " · ".join(f"{n} {k}" for k, n in s.items())
+        if g.get("forced"):
+            st.warning(f"🔁 Force re-extract ON — all {g['total']} file(s) re-processed, "
+                       f"ignoring the catalog.  ({bits})")
+        elif g.get("skipped"):
+            st.info(f"📇 File catalog: {g['skipped']} of {g['total']} file(s) skipped — content "
+                    f"unchanged and already loaded.  ({bits})  "
+                    f"Tick **Force re-extract** to process them anyway.")
+        elif bits:
+            st.caption(f"📇 File catalog: {bits}")
+        if g.get("note"):
+            st.caption(f"📇 {g['note']}")
+
     for label, n, modname, dep in (scan.get("missing_extractors") or []):
         st.error(f"❌ **{n} {label} file(s) found but not scanned** — the `{modname}` extractor "
                  f"couldn't be imported, so they were skipped."

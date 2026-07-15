@@ -185,6 +185,17 @@ def _header(text):
 
 
 # ── extract ─────────────────────────────────────────────────────────────────
+def _depth_unit(text, tables):
+    """The document states its own depth unit in headings/column headers ("Top MD (ft)",
+    "Depth (m)"). Read it rather than assume; default FT (US land data) if truly absent."""
+    blob = text + " " + " ".join(" ".join(str(c) for c in row)
+                                 for t in tables for row in t[:1])
+    b = blob.lower()
+    if re.search(r"\(\s*m\s*\)|\bmetres?\b|\bmeters?\b", b) and not re.search(r"\(\s*ft\s*\)", b):
+        return "M"
+    return "FT"
+
+
 def extract_file(path, source="DOCX"):
     res = {k: [] for k in ("well", "formation", "log", "curve", "core", "srvy_hdr", "srvy_sta")}
     res.update(doc_type="unknown", uwi="", well_name="", file=os.path.basename(path), error=None)
@@ -195,6 +206,7 @@ def extract_file(path, source="DOCX"):
         return res
 
     res["doc_type"] = _detect_type(text)
+    ouom = _depth_unit(text, tables)
     h = _header(text)
     uwi = _num(h.get("UWI", ""))[:14]
     wn = h.get("WELL_NAME", "")
@@ -214,18 +226,19 @@ def extract_file(path, source="DOCX"):
     # ---- dv_well ----
     if uwi or wn:
         res["well"].append({
-            "UWI": uwi, "WELL_NAME": wn, "OPERATOR": h.get("OPERATOR", ""),
-            "LICENSEE": h.get("LICENSEE", ""), "WELL_CLASS": h.get("WELL_CLASS", ""),
-            "STATUS": re.sub(r"\s*\(.*\)$", "", h.get("STATUS", "")).strip(),
-            "FIELD_NAME": h.get("FIELD_NAME", ""), "FORMATION_AT_TD": h.get("FORMATION_AT_TD", ""),
-            "COUNTRY": h.get("COUNTRY", ""), "PROVINCE_STATE": h.get("PROVINCE_STATE", ""),
-            "COUNTY": h.get("COUNTY", ""),
-            "SURFACE_LATITUDE": h.get("SURFACE_LATITUDE", ""),
-            "SURFACE_LONGITUDE": h.get("SURFACE_LONGITUDE", ""),
-            "SPUD_DATE": h.get("SPUD_DATE", ""), "COMPLETION_DATE": h.get("COMPLETION_DATE", ""),
-            "DRILLERS_TD": h.get("DRILLERS_TD", ""), "DEPTH_DATUM": h.get("DEPTH_DATUM", ""),
-            "KB_ELEV": h.get("KB_ELEV", ""), "GL_ELEV": h.get("GL_ELEV", ""),
-            "SOURCE": source})
+            "uwi": uwi, "well_name": wn, "operator_name": h.get("OPERATOR", ""),
+            "well_type": h.get("WELL_CLASS", ""),
+            "well_status": re.sub(r"\s*\(.*\)$", "", h.get("STATUS", "")).strip(),
+            "field_name": h.get("FIELD_NAME", ""),
+            "formation_at_td": h.get("FORMATION_AT_TD", ""),
+            "country": h.get("COUNTRY", ""), "province_state": h.get("PROVINCE_STATE", ""),
+            "county": h.get("COUNTY", ""),
+            "surface_latitude": h.get("SURFACE_LATITUDE", ""),
+            "surface_longitude": h.get("SURFACE_LONGITUDE", ""),
+            "spud_date": h.get("SPUD_DATE", ""), "completion_date": h.get("COMPLETION_DATE", ""),
+            "final_td": h.get("DRILLERS_TD", ""), "depth_datum": h.get("DEPTH_DATUM", ""),
+            "kb_elevation": h.get("KB_ELEV", ""), "ground_elevation": h.get("GL_ELEV", ""),
+            "elevation_ouom": ouom, "source": source})
 
     # ---- formation tops ----
     fh, fb = rows_of("top md")
@@ -240,10 +253,11 @@ def extract_file(path, source="DOCX"):
             unit = _cell(r, i_u)
             if unit and _num(_cell(r, i_t)):
                 res["formation"].append({
-                    "UWI": uwi, "STRAT_UNIT_ID": unit,
-                    "STRAT_NAME_SET_ID": _cell(r, i_s), "INTERP_ID": "1",
-                    "TOP_MD": _num(_cell(r, i_t)), "BASE_MD": _num(_cell(r, i_b)),
-                    "INTERP_DATE": _cell(r, i_d), "INTERP_BY": _cell(r, i_y), "SOURCE": source})
+                    "uwi": uwi, "strat_unit_id": unit, "strat_unit_name": unit,
+                    "strat_name_set": _cell(r, i_s), "interp_id": "1",
+                    "top_depth": _num(_cell(r, i_t)), "base_depth": _num(_cell(r, i_b)),
+                    "interp_date": _cell(r, i_d), "interpreter_ba_id": _cell(r, i_y),
+                    "depth_ouom": ouom, "source": source})
 
     # ---- log header (from the spec block) + curves ----
     log_id = ""
@@ -257,10 +271,10 @@ def extract_file(path, source="DOCX"):
     run = re.search(r"Run\s*(\d+)", text)
     if log_id or lt:
         res["log"].append({
-            "UWI": uwi, "LOG_ID": log_id or f"LOG_{uwi}", "LOG_TYPE": lt.group(1) if lt else "",
-            "RUN_NO": run.group(1) if run else "", "LOG_DATE": ld.group(1) if ld else "",
-            "TOP_DEPTH": _num(top.group(1)) if top else "",
-            "BASE_DEPTH": _num(bas.group(1)) if bas else "", "SOURCE": source})
+            "uwi": uwi, "log_id": log_id or f"LOG_{uwi}", "log_type": lt.group(1) if lt else "",
+            "run_num": run.group(1) if run else "", "log_date": ld.group(1) if ld else "",
+            "top_depth": _num(top.group(1)) if top else "",
+            "base_depth": _num(bas.group(1)) if bas else "", "depth_ouom": ouom, "source": source})
 
     ch, cb = rows_of("curve", "unit")
     if ch:
@@ -268,13 +282,23 @@ def extract_file(path, source="DOCX"):
         i_u = _find_col(ch, "unit")
         i_mn = _find_col(ch, "min value", "min")
         i_mx = _find_col(ch, "max value", "max")
+        lid = log_id or f"LOG_{uwi}"
+        seen_cv = {}
         for r in cb:
             name = _cell(r, i_c)
             if name:
+                # curve_id is NOT NULL and has no source column — generate it here rather
+                # than make the operator write a concat rule. log_id already carries the
+                # uwi, so {log_id}_{mnemonic} is unique and fits nvarchar(40). A repeated
+                # mnemonic in one log gets _2, _3 so the PK can't collide.
+                n = seen_cv.get(name, 0) + 1
+                seen_cv[name] = n
+                cid = f"{lid}_{name}" if n == 1 else f"{lid}_{name}_{n}"
                 res["curve"].append({
-                    "UWI": uwi, "LOG_ID": log_id or f"LOG_{uwi}", "CURVE_NAME": name,
-                    "CURVE_UNIT": _cell(r, i_u), "MIN_VALUE": _num(_cell(r, i_mn)),
-                    "MAX_VALUE": _num(_cell(r, i_mx)), "SOURCE": source})
+                    "uwi": uwi, "log_id": lid, "curve_id": cid[:40], "mnemonic": name,
+                    "curve_description": "", "curve_unit": _cell(r, i_u),
+                    "min_value": _num(_cell(r, i_mn)),
+                    "max_value": _num(_cell(r, i_mx)), "depth_ouom": ouom, "source": source})
 
     # ---- core ----
     coh, cob = rows_of("core id")
@@ -292,9 +316,10 @@ def extract_file(path, source="DOCX"):
             if not t_:
                 continue
             res["core"].append({
-                "UWI": uwi, "CORE_ID": _cell(r, i_id) or f"CORE_{uwi}_{k}",
-                "CORE_TYPE": _cell(r, i_ty), "TOP_DEPTH": t_, "BASE_DEPTH": _num(_cell(r, i_b)),
-                "RECOVERY_PCT": _num(_cell(r, i_r)), "FORMATION": _cell(r, i_f), "SOURCE": source})
+                "uwi": uwi, "core_id": _cell(r, i_id) or f"CORE_{uwi}_{k}",
+                "core_type": _cell(r, i_ty), "top_depth": t_, "base_depth": _num(_cell(r, i_b)),
+                "recovery_pct": _num(_cell(r, i_r)), "strat_unit_name": _cell(r, i_f),
+                "depth_ouom": ouom, "length_ouom": ouom, "source": source})
 
     # ---- directional survey ----
     sh, sb = rows_of("md", "azimuth")
@@ -319,31 +344,37 @@ def extract_file(path, source="DOCX"):
                 continue
             if inc > 120 or azi > 360:
                 continue
-            sta.append({"UWI": uwi, "SRVY_ID": srvy_id,
-                        "SURVEY_SEQ_NO": _cell(r, i_q) or str(k), "MD": md,
-                        "INCLINATION": _num(_cell(r, i_i)), "AZIMUTH": _num(_cell(r, i_a)),
-                        "TVDSS": _num(_cell(r, i_v)), "SOURCE": source})
+            sta.append({"uwi": uwi, "survey_id": srvy_id,
+                        "station_id": _cell(r, i_q) or str(k), "md": md,
+                        "incl": _num(_cell(r, i_i)), "azim": _num(_cell(r, i_a)),
+                        "tvd": _num(_cell(r, i_v)), "depth_ouom": ouom, "source": source})
         if sta:
-            res["srvy_hdr"].append({"UWI": uwi, "SRVY_ID": srvy_id, "SURVEY_SEQ_NO": "1",
-                                    "SOURCE": source})
+            res["srvy_hdr"].append({"uwi": uwi, "survey_id": srvy_id, "source": source})
             res["srvy_sta"] = sta
     return res
 
 
 # ── staging CSVs ────────────────────────────────────────────────────────────
+# Column names are the TARGET TABLE's real column names (from INFORMATION_SCHEMA), so the
+# loader's exact-name matcher maps every one automatically — no hand-mapping, no function
+# rules for keys. Don't rename these to suit a source document; the schema is the contract.
 _COLS = {
-    "well": ["UWI", "WELL_NAME", "OPERATOR", "LICENSEE", "WELL_CLASS", "STATUS", "FIELD_NAME",
-             "FORMATION_AT_TD", "COUNTRY", "PROVINCE_STATE", "COUNTY", "SURFACE_LATITUDE",
-             "SURFACE_LONGITUDE", "SPUD_DATE", "COMPLETION_DATE", "DRILLERS_TD", "DEPTH_DATUM",
-             "KB_ELEV", "GL_ELEV", "SOURCE"],
-    "formation": ["UWI", "STRAT_UNIT_ID", "STRAT_NAME_SET_ID", "INTERP_ID", "TOP_MD", "BASE_MD",
-                  "INTERP_DATE", "INTERP_BY", "SOURCE"],
-    "log": ["UWI", "LOG_ID", "LOG_TYPE", "RUN_NO", "LOG_DATE", "TOP_DEPTH", "BASE_DEPTH", "SOURCE"],
-    "curve": ["UWI", "LOG_ID", "CURVE_NAME", "CURVE_UNIT", "MIN_VALUE", "MAX_VALUE", "SOURCE"],
-    "core": ["UWI", "CORE_ID", "CORE_TYPE", "TOP_DEPTH", "BASE_DEPTH", "RECOVERY_PCT",
-             "FORMATION", "SOURCE"],
-    "srvy_hdr": ["UWI", "SRVY_ID", "SURVEY_SEQ_NO", "SOURCE"],
-    "srvy_sta": ["UWI", "SRVY_ID", "SURVEY_SEQ_NO", "MD", "INCLINATION", "AZIMUTH", "TVDSS", "SOURCE"],
+    "well": ["uwi", "well_name", "operator_name", "well_type", "well_status", "field_name",
+             "formation_at_td", "country", "province_state", "county", "surface_latitude",
+             "surface_longitude", "spud_date", "completion_date", "final_td", "depth_datum",
+             "kb_elevation", "ground_elevation", "elevation_ouom", "source"],
+    "formation": ["uwi", "strat_unit_id", "strat_unit_name", "strat_name_set", "interp_id",
+                  "top_depth", "base_depth", "interp_date", "interpreter_ba_id", "depth_ouom",
+                  "source"],
+    "log": ["uwi", "log_id", "log_type", "run_num", "log_date", "top_depth", "base_depth",
+            "depth_ouom", "source"],
+    "curve": ["uwi", "log_id", "curve_id", "mnemonic", "curve_description", "curve_unit",
+              "min_value", "max_value", "depth_ouom", "source"],
+    "core": ["uwi", "core_id", "core_type", "top_depth", "base_depth", "recovery_pct",
+             "strat_unit_name", "depth_ouom", "length_ouom", "source"],
+    "srvy_hdr": ["uwi", "survey_id", "source"],
+    "srvy_sta": ["uwi", "survey_id", "station_id", "md", "incl", "azim", "tvd",
+                 "depth_ouom", "source"],
 }
 
 TARGET = {

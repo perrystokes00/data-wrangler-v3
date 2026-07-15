@@ -2,13 +2,20 @@
 load_router.py — one door for loading a directory. Look at what's in the folder and
 send it down the right path:
 
-    Route A  csv, xlsx/xlsm/xltx/xls        → page_dir_loader  (tabular: map → FK → promote)
-    Route B  las, dlis, lis, xml/wml, pdf   → bulk_dir_loader   (well files: extract → stage)
-    Route C  anything else                  → not supported (listed, not loaded)
+    loadable   csv, xlsx/xlsm/xltx/xls, las, dlis, lis, xml/wml, pdf, docx/doc/odt
+    anything else → listed as unsupported, not loaded
 
-Mixed folders are normal (a well folder often holds well_header.csv *and* scout.pdf),
-so the router never guesses: it reports the counts and lets the operator pick a route.
-Only when a single route matches does it hand off automatically.
+DEFAULT: bulk_dir_loader (route B) for everything. It reads every supported type — CSVs and
+Excel included, through page_dir_loader.profile_directory, which also explodes workbooks to
+one CSV per sheet — and it carries the governance: UWI gate, content-hash file catalog, BCP
+staging, data-quality report, value repairs, date-format detection, dry run, verify.
+
+Route A (page_dir_loader) is NOT retired. It stays one click away via the ⇄ button on the
+routed page, because it still does one thing B doesn't: it repairs values inline in a
+per-table flow. Use it when a folder needs that hand-holding.
+
+NB page_dir_loader can't be deleted regardless — bulk_dir_loader imports its deterministic
+core (profile_directory, fingerprint_cols, load_catalog, _norm).
 
 Wire into app_v3.py:
 
@@ -34,6 +41,56 @@ A_EXTS = (".csv", ".xlsx", ".xlsm", ".xltx", ".xls")
 B_EXTS = (".las", ".dlis", ".lis", ".xml", ".wml", ".pdf", ".docx", ".doc", ".odt")
 
 _SHEET_DIR = "_xl_sheets"        # page_dir_loader's sidecar folder — not a source
+
+# Settings worth carrying from one folder to the next; everything else is scan state that
+# MUST go, or the next folder renders the previous folder's plan (a stale bdl_scan/dl_plan is
+# indistinguishable from "the scan found nothing").
+_KEEP_ON_RESET = ("bdl_server", "bdl_db", "bdl_cat", "bdl_bulk", "bdl_schema", "bdl_recursive",
+                  "dl_cat", "dl_recursive", "lr_recursive")
+
+
+def _scroll_to_top():
+    """Streamlit keeps the scroll position across reruns — after finishing a load at the
+    bottom of a long page, send the operator back to the directory box."""
+    try:
+        import streamlit.components.v1 as _components
+    except Exception:
+        return
+    _components.html(
+        """
+        <script>
+          const go = () => {
+            try {
+              const doc = window.parent.document;
+              const sels = ['section.main', 'section[data-testid="stMain"]',
+                            '.stMainBlockContainer', '[data-testid="stAppViewContainer"]',
+                            '[data-testid="stVerticalBlock"]'];
+              for (const s of sels) {
+                const el = doc.querySelector(s);
+                if (el && el.scrollTo) el.scrollTo(0, 0);
+                if (el) el.scrollTop = 0;
+              }
+              doc.documentElement.scrollTop = 0;
+              doc.body.scrollTop = 0;
+              window.parent.scrollTo(0, 0);
+            } catch (e) {}
+          };
+          // retry past Streamlit's own scroll restoration, which lands after render
+          [0, 60, 150, 300, 600, 1000, 1500].forEach(t => setTimeout(go, t));
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _load_another(ss):
+    """Back to the directory picker, reset for a genuinely different folder."""
+    keep = {k: ss[k] for k in _KEEP_ON_RESET if k in ss}
+    for k in [k for k in list(ss.keys())
+              if k.startswith(("bdl_", "dl_", "lr_"))]:
+        ss.pop(k, None)
+    ss.update(keep)
+    ss["lr_scroll_top"] = True
 
 
 def classify(directory, recursive=False):
@@ -73,7 +130,24 @@ def _fmt(counts):
     return " · ".join(f"{n} {e}" for e, n in counts.items()) if counts else "—"
 
 
+def _listing(label, paths):
+    """Show a file list in an expander — falling back to a plain caption if we're already
+    inside one (Streamlit forbids nesting, and a file list isn't worth an exception)."""
+    def _body():
+        for p in sorted(paths)[:200]:
+            st.markdown(f"- `{os.path.basename(p)}`")
+        if len(paths) > 200:
+            st.caption(f"…and {len(paths) - 200} more")
+    try:
+        with st.expander(label):
+            _body()
+    except Exception:
+        st.caption(label)
+        _body()
+
+
 def _go_a(ss, directory):
+    ss["lr_dir"] = directory          # remembered so we can switch loaders on the same folder
     ss["dl_dir"] = directory          # pre-seed so page_dir_loader doesn't re-ask
     ss["dl_recursive"] = bool(ss.get("lr_recursive"))
     ss["dl_stage"] = "pick"
@@ -81,25 +155,54 @@ def _go_a(ss, directory):
 
 
 def _go_b(ss, directory):
+    ss["lr_dir"] = directory          # remembered so we can switch loaders on the same folder
     ss["bdl_dir"] = directory         # pre-seed bulk_dir_loader's directory
     ss["bdl_recursive"] = bool(ss.get("lr_recursive"))   # carry recursion, or B scans flat
     ss["lr_route"] = "B"
+
+
+def _switch_route(ss):
+    """Run the SAME folder through the other loader. The two stage completely differently
+    (A inserts per table, B extracts → BCP → staging → promote), so this clears the previous
+    loader's state rather than trying to carry it across."""
+    d = ss.get("lr_dir") or ss.get("dl_dir") or ss.get("bdl_dir") or ""
+    to = "B" if ss.get("lr_route") == "A" else "A"
+    keep = {k: ss[k] for k in _KEEP_ON_RESET if k in ss}
+    for k in [k for k in list(ss.keys()) if k.startswith(("bdl_", "dl_", "lr_"))]:
+        ss.pop(k, None)
+    ss.update(keep)
+    (_go_b if to == "B" else _go_a)(ss, d)
+    ss["lr_scroll_top"] = True
 
 
 def run(engine=None, dialect=None):
     if st is None:
         return
     ss = st.session_state
+    if ss.pop("lr_scroll_top", False):
+        _scroll_to_top()
 
     # once routed, hand off to the chosen loader (with a way back)
     route = ss.get("lr_route")
     if route in ("A", "B"):
-        top = st.columns([1, 4])
-        if top[0].button("← Load another folder"):
-            ss.pop("lr_route", None)
-            st.rerun()
-        top[1].caption(f"Route {route} · "
-                       + ("tabular (CSV / Excel)" if route == "A" else "well files (LAS/DLIS/WITSML/PDF)"))
+        top = st.columns([1, 1, 3])
+        if top[0].button("← Load another folder", key="lr_back_top"):
+            _load_another(ss); st.rerun()
+        if route == "B":
+            _lbl, _help = ("⇄ Use the tabular loader",
+                           "Same folder, route A (page_dir_loader): one table at a time, with "
+                           "per-table FK resolution and inline value repair. Slower, but it "
+                           "cleans values as it loads.")
+        else:
+            _lbl, _help = ("⇄ Back to the main loader",
+                           "Same folder, route B (bulk_dir_loader): the default — UWI gate, "
+                           "file catalog, BCP staging, data-quality report, dry run, verify.")
+        if top[1].button(_lbl, key="lr_switch", help=_help):
+            _switch_route(ss); st.rerun()
+        top[2].caption(
+            "Route B · main loader — CSV · Excel · LAS · DLIS · LIS · WITSML · PDF · Word"
+            if route == "B" else
+            "Route A · tabular loader — one table at a time (CSV / Excel)")
         if route == "A":
             try:
                 from dataview.import_data import page_dir_loader as _a
@@ -112,6 +215,11 @@ def run(engine=None, dialect=None):
             except Exception:
                 import bulk_dir_loader as _b
             _b.run()
+        # same way out at the bottom — these pages are long, and after a load finishes you
+        # shouldn't have to scroll back up to point at the next folder.
+        st.divider()
+        if st.button("← Load another folder", key="lr_back_bottom"):
+            _load_another(ss); st.rerun()
         return
 
     st.title("📁 Directory Loader")
@@ -134,43 +242,29 @@ def run(engine=None, dialect=None):
         return
 
     a, b, c = found["A"], found["B"], found["C"]
-    m = st.columns(3)
-    m[0].metric("tabular (route A)", len(a), help=_fmt(_counts(a)) if a else None)
-    m[1].metric("well files (route B)", len(b), help=_fmt(_counts(b)) if b else None)
-    m[2].metric("not supported", len(c), help=_fmt(_counts(c)) if c else None)
+    loadable = a + b
+    m = st.columns(2)
+    m[0].metric("loadable", len(loadable), help=_fmt(_counts(loadable)) if loadable else None)
+    m[1].metric("not supported", len(c), help=_fmt(_counts(c)) if c else None)
+    if loadable:
+        st.caption(f"**{_fmt(_counts(loadable))}**")
 
-    if a:
-        st.caption(f"**A · tabular** — {_fmt(_counts(a))}")
-    if b:
-        st.caption(f"**B · well files** — {_fmt(_counts(b))}")
-
-    if not a and not b:
-        st.warning("Nothing loadable here. Supported: "
-                   + ", ".join(A_EXTS + B_EXTS))
+    if not loadable:
+        st.warning("Nothing loadable here. Supported: " + ", ".join(A_EXTS + B_EXTS))
         if c:
-            with st.expander(f"{len(c)} unsupported file(s)"):
-                for p in sorted(c)[:200]:
-                    st.markdown(f"- `{os.path.basename(p)}`")
+            _listing(f"{len(c)} unsupported file(s)", c)
         return
 
-    # single route → go straight there (the system decides); mixed → ask, never guess
-    if a and not b:
-        _go_a(ss, directory); st.rerun()
-    elif b and not a:
-        _go_b(ss, directory); st.rerun()
-    else:
-        st.info("This folder holds **both** kinds. The two loaders stage differently, so run "
-                "them one at a time — start with either, then come back for the other.")
-        c1, c2 = st.columns(2)
-        if c1.button(f"→ Tabular loader  ({len(a)} file(s))", use_container_width=True):
-            _go_a(ss, directory); st.rerun()
-        if c2.button(f"→ Well-file loader  ({len(b)} file(s))", use_container_width=True):
-            _go_b(ss, directory); st.rerun()
+    # Default to B. It reads every supported type (CSV/Excel included, via
+    # page_dir_loader.profile_directory, which also explodes workbooks) and it's where the
+    # governance lives: UWI gate, file catalog, staging via BCP, data-quality report,
+    # repairs, date-format check, dry run, verify. Route A stays one click away on the
+    # routed page (⇄) for the per-table flow — it isn't retired, just not the default.
+    _go_b(ss, directory)
+    st.rerun()
 
     if c:
-        with st.expander(f"{len(c)} unsupported file(s) — ignored"):
-            for p in sorted(c)[:200]:
-                st.markdown(f"- `{os.path.basename(p)}`")
+        _listing(f"{len(c)} unsupported file(s) — ignored", c)
 
 
 render = main = show = app = run

@@ -77,6 +77,14 @@ def _header(text, tables):
     return out
 
 
+def _depth_unit(text):
+    """Read the document's stated depth unit rather than assume it."""
+    b = (text or "").lower()
+    if re.search(r"\(\s*m\s*\)|\bmetres?\b|\bmeters?\b", b) and not re.search(r"\(\s*ft\s*\)", b):
+        return "M"
+    return "FT"
+
+
 def extract_file(path, source="PDF"):
     import pdfplumber
     res = {k: [] for k in ("well", "formation", "casing", "stim", "dst", "dst_period",
@@ -106,12 +114,12 @@ def extract_file(path, source="PDF"):
     county = hdr.get("COUNTY", "").split(",")[0].split("\n")[0].strip()
 
     res["well"].append({
-        "UWI": uwi, "WELL_NAME": wn, "OPERATOR": hdr.get("OPERATOR", ""),
-        "FIELD_NAME": hdr.get("FIELD_NAME", ""), "COUNTY": county,
-        "PROVINCE_STATE": hdr.get("PROVINCE_STATE", ""), "STATUS": hdr.get("STATUS", ""),
-        "SPUD_DATE": hdr.get("SPUD_DATE", ""), "COMPLETION_DATE": hdr.get("COMPLETION_DATE", ""),
-        "DRILLERS_TD": _num(hdr.get("DRILLERS_TD", "")), "KB_ELEV": _num(hdr.get("KB_ELEV", "")),
-        "FILE_PATH": os.path.abspath(path), "FILE_FORMAT": "PDF", "SOURCE": source})
+        "uwi": uwi, "well_name": wn, "operator_name": hdr.get("OPERATOR", ""),
+        "field_name": hdr.get("FIELD_NAME", ""), "county": county,
+        "province_state": hdr.get("PROVINCE_STATE", ""), "well_status": hdr.get("STATUS", ""),
+        "spud_date": hdr.get("SPUD_DATE", ""), "completion_date": hdr.get("COMPLETION_DATE", ""),
+        "final_td": _num(hdr.get("DRILLERS_TD", "")), "kb_elevation": _num(hdr.get("KB_ELEV", "")),
+        "elevation_ouom": _depth_unit(text), "source": source})
 
     def rows_of(*sig):
         """Yield (head, body) for the first table whose header contains all signature words."""
@@ -131,10 +139,11 @@ def extract_file(path, source="PDF"):
         for k, r in enumerate(body, 1):
             unit = _cell(r, i_n)
             if unit:
-                res["formation"].append({"UWI": uwi, "STRAT_NAME_SET_ID": "PDF_DOC",
-                    "STRAT_UNIT_ID": unit, "INTERP_ID": f"PDF_{stem}", "INTERP_BY": hdr.get("OPERATOR", ""),
-                    "INTERP_DATE": hdr.get("COMPLETION_DATE", ""), "TOP_MD": _num(_cell(r, i_md)),
-                    "BASE_MD": "", "SOURCE": source})
+                res["formation"].append({"uwi": uwi, "strat_name_set": "PDF_DOC",
+                    "strat_unit_id": unit, "strat_unit_name": unit, "interp_id": f"PDF_{stem}"[:40],
+                    "interpreter_ba_id": hdr.get("OPERATOR", ""),
+                    "interp_date": hdr.get("COMPLETION_DATE", ""), "top_depth": _num(_cell(r, i_md)),
+                    "base_depth": "", "depth_ouom": _depth_unit(text), "source": source})
 
     # ---- casing strings (scout + casing/cementing) ----
     head, body = rows_of("string" if dt == "casing" else "casing")
@@ -245,8 +254,8 @@ def extract_file(path, source="PDF"):
     if not s_head:
         s_head, s_body = rows_of("md", "incl")
     if s_head or dt == "survey":
-        res["srvy_hdr"].append({"UWI": uwi, "SRVY_ID": f"SRVY_{stem}", "SURVEY_SEQ_NO": "1",
-                                "WELL_NAME": wn, "SOURCE": source})
+        srvy_id = (f"{uwi}-SRVY" if uwi else f"SRVY_{stem}")[:40]
+        res["srvy_hdr"].append({"uwi": uwi, "survey_id": srvy_id, "source": source})
         if s_head:
             i_md = _find_col(s_head, "meas depth", "md"); i_in = _find_col(s_head, "incl", "inc")
             i_az = _find_col(s_head, "azim", "azi"); i_tv = _find_col(s_head, "tvd")
@@ -260,17 +269,20 @@ def extract_file(path, source="PDF"):
                 except ValueError:
                     continue
                 if inc <= 120 and azi <= 360:
-                    res["srvy_sta"].append({"UWI": uwi, "SRVY_ID": f"SRVY_{stem}", "SURVEY_SEQ_NO": "1",
-                        "MD": _num(md), "INCLINATION": _num(_cell(r, i_in)), "AZIMUTH": _num(_cell(r, i_az)),
-                        "TVDSS": _num(_cell(r, i_tv)), "SOURCE": source})
+                    res["srvy_sta"].append({"uwi": uwi, "survey_id": srvy_id,
+                        "station_id": str(len(res["srvy_sta"]) + 1),   # unique within the survey
+                        "md": _num(md), "incl": _num(_cell(r, i_in)), "azim": _num(_cell(r, i_az)),
+                        "tvd": _num(_cell(r, i_tv)), "depth_ouom": _depth_unit(text), "source": source})
     return res
 
 
 _COLS = {
-    "well": ["UWI", "WELL_NAME", "OPERATOR", "FIELD_NAME", "COUNTY", "PROVINCE_STATE", "STATUS",
-             "SPUD_DATE", "COMPLETION_DATE", "DRILLERS_TD", "KB_ELEV", "FILE_PATH", "FILE_FORMAT", "SOURCE"],
-    "formation": ["UWI", "STRAT_NAME_SET_ID", "STRAT_UNIT_ID", "INTERP_ID", "INTERP_BY", "INTERP_DATE",
-                  "TOP_MD", "BASE_MD", "SOURCE"],
+    "well": ["uwi", "well_name", "operator_name", "field_name", "county", "province_state",
+             "well_status", "spud_date", "completion_date", "final_td", "kb_elevation",
+             "elevation_ouom", "source"],
+    "formation": ["uwi", "strat_name_set", "strat_unit_id", "strat_unit_name", "interp_id",
+                  "interpreter_ba_id", "interp_date", "top_depth", "base_depth", "depth_ouom",
+                  "source"],
     "casing": ["UWI", "CASING_ID", "CASING_TYPE", "STRING_NUM", "OD_IN", "WEIGHT_LB_FT", "GRADE",
                "BASE_DEPTH", "SOURCE"],
     "stim": ["UWI", "COMPLETION_ID", "STIM_ID", "STAGE_NUM", "STIM_TYPE", "STAGE_TOP_DEPTH",
@@ -284,8 +296,9 @@ _COLS = {
     "petro_interp": ["UWI", "INTERP_ID", "INTERP_NAME", "INTERP_DATE", "SOURCE"],
     "petro_zone": ["UWI", "INTERP_ID", "ZONE_ID", "ZONE_NAME", "TOP_DEPTH", "BASE_DEPTH",
                    "GROSS_THICKNESS", "NET_THICKNESS", "NET_TO_GROSS", "PHI_EFFECTIVE_AVG", "SW_AVG", "SOURCE"],
-    "srvy_hdr": ["UWI", "SRVY_ID", "SURVEY_SEQ_NO", "WELL_NAME", "SOURCE"],
-    "srvy_sta": ["UWI", "SRVY_ID", "SURVEY_SEQ_NO", "MD", "INCLINATION", "AZIMUTH", "TVDSS", "SOURCE"],
+    "srvy_hdr": ["uwi", "survey_id", "source"],
+    "srvy_sta": ["uwi", "survey_id", "station_id", "md", "incl", "azim", "tvd",
+                 "depth_ouom", "source"],
 }
 _FILE = {k: f"pdf_{k}.csv" for k in _COLS}
 # kind → (target table, staging suffix)

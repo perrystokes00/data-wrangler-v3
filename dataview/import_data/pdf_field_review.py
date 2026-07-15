@@ -308,7 +308,11 @@ def render_pdf_review(ss, schema=None):
 
             # survey bulk-paste rebuild
             if kind == "srvy_sta":
-                with st.expander("Paste survey stations (MD  INC  AZI  TVD per line)"):
+                # NB: we're already inside an expander (the per-block one above), and
+                # Streamlit forbids nesting them — so gate this with a checkbox, not a
+                # second expander.
+                if st.checkbox("📋 Paste survey stations (MD  INC  AZI  TVD per line)",
+                               key=f"bdl_pdf_paste_open_{kind}"):
                     txt = st.text_area("One station per line — spaces, tabs, or commas",
                                        key=f"bdl_pdf_paste_{kind}", height=140,
                                        placeholder="0      0.0    0.0    0\n500    2.1    182.4  499\n...")
